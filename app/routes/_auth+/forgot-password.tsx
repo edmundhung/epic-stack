@@ -1,5 +1,5 @@
-import { conform, useForm } from '@conform-to/react'
-import { getFieldsetConstraint, parse } from '@conform-to/zod'
+import { getFormProps, getInputProps, useForm } from '@conform-to/react'
+import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import * as E from '@react-email/components'
 import {
 	json,
@@ -29,7 +29,7 @@ export async function action({ request }: DataFunctionArgs) {
 	const formData = await request.formData()
 	await validateCSRF(formData, request.headers)
 	checkHoneypot(formData)
-	const submission = await parse(formData, {
+	const submission = await parseWithZod(formData, {
 		schema: ForgotPasswordSchema.superRefine(async (data, ctx) => {
 			const user = await prisma.user.findFirst({
 				where: {
@@ -51,11 +51,10 @@ export async function action({ request }: DataFunctionArgs) {
 		}),
 		async: true,
 	})
-	if (submission.intent !== 'submit') {
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(submission.reject(), {
+			status: submission.type === 'submit' ? 400 : 200,
+		})
 	}
 	const { usernameOrEmail } = submission.value
 
@@ -82,8 +81,9 @@ export async function action({ request }: DataFunctionArgs) {
 	if (response.status === 'success') {
 		return redirect(redirectTo.toString())
 	} else {
-		submission.error[''] = [response.error.message]
-		return json({ status: 'error', submission } as const, { status: 500 })
+		return json(submission.reject({ formError: [response.error.message] }), {
+			status: 500,
+		})
 	}
 }
 
@@ -121,12 +121,12 @@ export const meta: MetaFunction = () => {
 export default function ForgotPasswordRoute() {
 	const forgotPassword = useFetcher<typeof action>()
 
-	const [form, fields] = useForm({
+	const { meta, fields } = useForm({
 		id: 'forgot-password-form',
-		constraint: getFieldsetConstraint(ForgotPasswordSchema),
-		lastSubmission: forgotPassword.data?.submission,
+		constraint: getZodConstraint(ForgotPasswordSchema),
+		lastResult: forgotPassword.data,
 		onValidate({ formData }) {
-			return parse(formData, { schema: ForgotPasswordSchema })
+			return parseWithZod(formData, { schema: ForgotPasswordSchema })
 		},
 		shouldRevalidate: 'onBlur',
 	})
@@ -141,7 +141,7 @@ export default function ForgotPasswordRoute() {
 					</p>
 				</div>
 				<div className="mx-auto mt-16 min-w-full max-w-sm sm:min-w-[368px]">
-					<forgotPassword.Form method="POST" {...form.props}>
+					<forgotPassword.Form method="POST" {...getFormProps(meta)}>
 						<AuthenticityTokenInput />
 						<HoneypotInputs />
 						<div>
@@ -152,12 +152,12 @@ export default function ForgotPasswordRoute() {
 								}}
 								inputProps={{
 									autoFocus: true,
-									...conform.input(fields.usernameOrEmail),
+									...getInputProps(fields.usernameOrEmail),
 								}}
 								errors={fields.usernameOrEmail.errors}
 							/>
 						</div>
-						<ErrorList errors={form.errors} id={form.errorId} />
+						<ErrorList errors={meta.errors} id={meta.errorId} />
 
 						<div className="mt-6">
 							<StatusButton
@@ -165,7 +165,7 @@ export default function ForgotPasswordRoute() {
 								status={
 									forgotPassword.state === 'submitting'
 										? 'pending'
-										: forgotPassword.data?.status ?? 'idle'
+										: meta.status ?? 'idle'
 								}
 								type="submit"
 								disabled={forgotPassword.state !== 'idle'}

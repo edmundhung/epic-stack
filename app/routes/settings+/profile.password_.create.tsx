@@ -1,5 +1,5 @@
-import { conform, useForm } from '@conform-to/react'
-import { getFieldsetConstraint, parse } from '@conform-to/zod'
+import { getFormProps, getInputProps, useForm } from '@conform-to/react'
+import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
 import { json, redirect, type DataFunctionArgs } from '@remix-run/node'
 import { Form, Link, useActionData } from '@remix-run/react'
@@ -40,19 +40,19 @@ export async function action({ request }: DataFunctionArgs) {
 	const userId = await requireUserId(request)
 	await requireNoPassword(userId)
 	const formData = await request.formData()
-	const submission = await parse(formData, {
+	const submission = await parseWithZod(formData, {
 		async: true,
 		schema: CreatePasswordForm,
 	})
-	// clear the payload so we don't send the password back to the client
-	submission.payload = {}
-	if (submission.intent !== 'submit') {
-		// clear the value so we don't send the password back to the client
-		submission.value = undefined
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(
+			submission.reject({
+				hideFields: ['password', 'confirmPassword'],
+			}),
+			{
+				status: submission.type === 'submit' ? 400 : 200,
+			},
+		)
 	}
 
 	const { password } = submission.value
@@ -76,38 +76,38 @@ export default function CreatePasswordRoute() {
 	const actionData = useActionData<typeof action>()
 	const isPending = useIsPending()
 
-	const [form, fields] = useForm({
+	const { meta, fields } = useForm({
 		id: 'password-create-form',
-		constraint: getFieldsetConstraint(CreatePasswordForm),
-		lastSubmission: actionData?.submission,
+		constraint: getZodConstraint(CreatePasswordForm),
+		lastResult: actionData,
 		onValidate({ formData }) {
-			return parse(formData, { schema: CreatePasswordForm })
+			return parseWithZod(formData, { schema: CreatePasswordForm })
 		},
 		shouldRevalidate: 'onBlur',
 	})
 
 	return (
-		<Form method="POST" {...form.props} className="mx-auto max-w-md">
+		<Form method="POST" {...getFormProps(meta)} className="mx-auto max-w-md">
 			<Field
 				labelProps={{ children: 'New Password' }}
-				inputProps={conform.input(fields.password, { type: 'password' })}
+				inputProps={getInputProps(fields.password, { type: 'password' })}
 				errors={fields.password.errors}
 			/>
 			<Field
 				labelProps={{ children: 'Confirm New Password' }}
-				inputProps={conform.input(fields.confirmPassword, {
+				inputProps={getInputProps(fields.confirmPassword, {
 					type: 'password',
 				})}
 				errors={fields.confirmPassword.errors}
 			/>
-			<ErrorList id={form.errorId} errors={form.errors} />
+			<ErrorList id={meta.errorId} errors={meta.errors} />
 			<div className="grid w-full grid-cols-2 gap-6">
 				<Button variant="secondary" asChild>
 					<Link to="..">Cancel</Link>
 				</Button>
 				<StatusButton
 					type="submit"
-					status={isPending ? 'pending' : actionData?.status ?? 'idle'}
+					status={isPending ? 'pending' : meta.status ?? 'idle'}
 				>
 					Create Password
 				</StatusButton>

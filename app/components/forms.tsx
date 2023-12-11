@@ -1,4 +1,4 @@
-import { useInputEvent } from '@conform-to/react'
+import { useInputControl } from '@conform-to/react'
 import React, { useId, useRef } from 'react'
 import { Checkbox, type CheckboxProps } from './ui/checkbox.tsx'
 import { Input } from './ui/input.tsx'
@@ -94,19 +94,23 @@ export function CheckboxField({
 	className,
 }: {
 	labelProps: JSX.IntrinsicElements['label']
-	buttonProps: CheckboxProps
+	buttonProps: CheckboxProps & {
+		key?: string
+		name: string
+		form: string
+		value?: string
+	}
 	errors?: ListOfErrors
 	className?: string
 }) {
 	const fallbackId = useId()
 	const buttonRef = useRef<HTMLButtonElement>(null)
-	// To emulate native events that Conform listen to:
-	// See https://conform.guide/integrations
-	const control = useInputEvent({
-		// Retrieve the checkbox element by name instead as Radix does not expose the internal checkbox element
-		// See https://github.com/radix-ui/primitives/discussions/874
-		ref: () =>
-			buttonRef.current?.form?.elements.namedItem(buttonProps.name ?? ''),
+	const control = useInputControl<string, boolean>({
+		key: buttonProps.key !== null ? buttonProps.key : undefined,
+		name: buttonProps.name,
+		formId: buttonProps.form,
+		initialValue: buttonProps.defaultChecked ? buttonProps.value : undefined,
+		initialize: value => typeof value !== 'undefined',
 		onFocus: () => buttonRef.current?.focus(),
 	})
 	const id = buttonProps.id ?? buttonProps.name ?? fallbackId
@@ -120,6 +124,7 @@ export function CheckboxField({
 					aria-invalid={errorId ? true : undefined}
 					aria-describedby={errorId}
 					{...buttonProps}
+					checked={control.value}
 					onCheckedChange={state => {
 						control.change(Boolean(state.valueOf()))
 						buttonProps.onCheckedChange?.(state)

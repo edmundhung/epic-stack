@@ -1,5 +1,11 @@
-import { conform, useForm } from '@conform-to/react'
-import { getFieldsetConstraint, parse } from '@conform-to/zod'
+import {
+	getControlButtonProps,
+	getFormProps,
+	getInputProps,
+	intent,
+	useForm,
+} from '@conform-to/react'
+import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
 import {
 	json,
@@ -51,7 +57,10 @@ const NewImageSchema = z.object({
 		.refine(file => file.size <= MAX_SIZE, 'Image size must be less than 3MB'),
 })
 
-const PhotoFormSchema = z.union([DeleteImageSchema, NewImageSchema])
+const PhotoFormSchema = z.discriminatedUnion('intent', [
+	DeleteImageSchema,
+	NewImageSchema,
+])
 
 export async function loader({ request }: DataFunctionArgs) {
 	const userId = await requireUserId(request)
@@ -76,7 +85,7 @@ export async function action({ request }: DataFunctionArgs) {
 	)
 	await validateCSRF(formData, request.headers)
 
-	const submission = await parse(formData, {
+	const submission = await parseWithZod(formData, {
 		schema: PhotoFormSchema.transform(async data => {
 			if (data.intent === 'delete') return { intent: 'delete' }
 			if (data.photoFile.size <= 0) return z.NEVER
@@ -91,11 +100,10 @@ export async function action({ request }: DataFunctionArgs) {
 		async: true,
 	})
 
-	if (submission.intent !== 'submit') {
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(submission.reject(), {
+			status: submission.type === 'submit' ? 400 : 200,
+		})
 	}
 
 	const { image, intent } = submission.value
@@ -124,24 +132,19 @@ export default function PhotoRoute() {
 	const actionData = useActionData<typeof action>()
 	const navigation = useNavigation()
 
-	const [form, fields] = useForm({
+	const { meta, fields } = useForm({
 		id: 'profile-photo',
-		constraint: getFieldsetConstraint(PhotoFormSchema),
-		lastSubmission: actionData?.submission,
+		constraint: getZodConstraint(PhotoFormSchema),
+		lastResult: actionData,
 		onValidate({ formData }) {
-			// otherwise, the best error zod gives us is "Invalid input" which is not
-			// enough
-			if (formData.get('intent') === 'delete') {
-				return parse(formData, { schema: DeleteImageSchema })
-			}
-			return parse(formData, { schema: NewImageSchema })
+			return parseWithZod(formData, { schema: PhotoFormSchema })
 		},
 		shouldRevalidate: 'onBlur',
 	})
 
 	const isPending = useIsPending()
 	const pendingIntent = isPending ? navigation.formData?.get('intent') : null
-	const lastSubmissionIntent = actionData?.submission.value?.intent
+	const lastSubmissionIntent = fields.intent.value
 
 	const [newImageSrc, setNewImageSrc] = useState<string | null>(null)
 
@@ -152,7 +155,7 @@ export default function PhotoRoute() {
 				encType="multipart/form-data"
 				className="flex flex-col items-center justify-center gap-10"
 				onReset={() => setNewImageSrc(null)}
-				{...form.props}
+				{...getFormProps(meta)}
 			>
 				<AuthenticityTokenInput />
 				<img
@@ -171,7 +174,7 @@ export default function PhotoRoute() {
 						an image has been selected). Progressive enhancement FTW!
 					*/}
 					<input
-						{...conform.input(fields.photoFile, { type: 'file' })}
+						{...getInputProps(fields.photoFile, { type: 'file' })}
 						accept="image/*"
 						className="peer sr-only"
 						required
@@ -204,16 +207,16 @@ export default function PhotoRoute() {
 							pendingIntent === 'submit'
 								? 'pending'
 								: lastSubmissionIntent === 'submit'
-								  ? actionData?.status ?? 'idle'
+								  ? meta.status ?? 'idle'
 								  : 'idle'
 						}
 					>
 						Save Photo
 					</StatusButton>
 					<Button
-						type="reset"
 						variant="destructive"
 						className="peer-invalid:hidden"
+						{...getControlButtonProps(meta.id, intent.reset({}))}
 					>
 						<Icon name="trash">Reset</Icon>
 					</Button>
@@ -230,7 +233,7 @@ export default function PhotoRoute() {
 								pendingIntent === 'delete'
 									? 'pending'
 									: lastSubmissionIntent === 'delete'
-									  ? actionData?.status ?? 'idle'
+									  ? meta.status ?? 'idle'
 									  : 'idle'
 							}
 						>
@@ -242,7 +245,7 @@ export default function PhotoRoute() {
 						</StatusButton>
 					) : null}
 				</div>
-				<ErrorList errors={form.errors} />
+				<ErrorList errors={meta.errors} />
 			</Form>
 		</div>
 	)

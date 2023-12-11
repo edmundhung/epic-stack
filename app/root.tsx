@@ -1,5 +1,5 @@
-import { useForm } from '@conform-to/react'
-import { parse } from '@conform-to/zod'
+import { useForm, getFormProps } from '@conform-to/react'
+import { parseWithZod } from '@conform-to/zod'
 import { cssBundleHref } from '@remix-run/css-bundle'
 import {
 	json,
@@ -173,21 +173,20 @@ const ThemeFormSchema = z.object({
 
 export async function action({ request }: DataFunctionArgs) {
 	const formData = await request.formData()
-	const submission = parse(formData, {
+	const submission = parseWithZod(formData, {
 		schema: ThemeFormSchema,
 	})
-	if (submission.intent !== 'submit') {
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(submission.reject(), {
+			status: submission.type === 'submit' ? 400 : 200,
+		})
 	}
 	const { theme } = submission.value
 
 	const responseInit = {
 		headers: { 'set-cookie': setTheme(theme) },
 	}
-	return json({ success: true, submission }, responseInit)
+	return json(submission.accept(), responseInit)
 }
 
 function Document({
@@ -377,7 +376,7 @@ export function useOptimisticThemeMode() {
 	const themeFetcher = fetchers.find(f => f.formAction === '/')
 
 	if (themeFetcher && themeFetcher.formData) {
-		const submission = parse(themeFetcher.formData, {
+		const submission = parseWithZod(themeFetcher.formData, {
 			schema: ThemeFormSchema,
 		})
 		return submission.value?.theme
@@ -387,9 +386,9 @@ export function useOptimisticThemeMode() {
 function ThemeSwitch({ userPreference }: { userPreference?: Theme | null }) {
 	const fetcher = useFetcher<typeof action>()
 
-	const [form] = useForm({
+	const { meta } = useForm({
 		id: 'theme-switch',
-		lastSubmission: fetcher.data?.submission,
+		lastResult: fetcher.data,
 	})
 
 	const optimisticMode = useOptimisticThemeMode()
@@ -415,7 +414,7 @@ function ThemeSwitch({ userPreference }: { userPreference?: Theme | null }) {
 	}
 
 	return (
-		<fetcher.Form method="POST" {...form.props}>
+		<fetcher.Form method="POST" {...getFormProps(meta, { ariaInvalid: 'all' })}>
 			<input type="hidden" name="theme" value={nextMode} />
 			<div className="flex gap-2">
 				<button
@@ -425,7 +424,10 @@ function ThemeSwitch({ userPreference }: { userPreference?: Theme | null }) {
 					{modeLabel[mode]}
 				</button>
 			</div>
-			<ErrorList errors={form.errors} id={form.errorId} />
+			<ErrorList
+				id={meta.errorId}
+				errors={Object.values(meta.allErrors).flat()}
+			/>
 		</fetcher.Form>
 	)
 }

@@ -1,5 +1,5 @@
-import { conform, useForm } from '@conform-to/react'
-import { getFieldsetConstraint, parse } from '@conform-to/zod'
+import { useForm, getFormProps, getInputProps } from '@conform-to/react'
+import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import {
 	json,
 	redirect,
@@ -201,10 +201,10 @@ export async function action({ request }: DataFunctionArgs) {
 	const formData = await request.formData()
 	await validateCSRF(formData, request.headers)
 	checkHoneypot(formData)
-	const submission = await parse(formData, {
+	const submission = await parseWithZod(formData, {
 		schema: intent =>
 			LoginFormSchema.transform(async (data, ctx) => {
-				if (intent !== 'submit') return { ...data, session: null }
+				if (intent !== null) return { ...data, session: null }
 
 				const session = await login(data)
 				if (!session) {
@@ -219,16 +219,16 @@ export async function action({ request }: DataFunctionArgs) {
 			}),
 		async: true,
 	})
-	// get the password off the payload that's sent back
-	delete submission.payload.password
 
-	if (submission.intent !== 'submit') {
-		// @ts-expect-error - conform should probably have support for doing this
-		delete submission.value?.password
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value?.session) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(
+			submission.reject({
+				hideFields: ['password'],
+			}),
+			{
+				status: submission.type === 'submit' ? 400 : 200,
+			},
+		)
 	}
 
 	const { session, remember, redirectTo } = submission.value
@@ -247,13 +247,13 @@ export default function LoginPage() {
 	const [searchParams] = useSearchParams()
 	const redirectTo = searchParams.get('redirectTo')
 
-	const [form, fields] = useForm({
+	const { meta, fields } = useForm({
 		id: 'login-form',
-		constraint: getFieldsetConstraint(LoginFormSchema),
+		constraint: getZodConstraint(LoginFormSchema),
 		defaultValue: { redirectTo },
-		lastSubmission: actionData?.submission,
+		lastResult: actionData,
 		onValidate({ formData }) {
-			return parse(formData, { schema: LoginFormSchema })
+			return parseWithZod(formData, { schema: LoginFormSchema })
 		},
 		shouldRevalidate: 'onBlur',
 	})
@@ -271,13 +271,13 @@ export default function LoginPage() {
 
 				<div>
 					<div className="mx-auto w-full max-w-md px-8">
-						<Form method="POST" {...form.props}>
+						<Form method="POST" {...getFormProps(meta)}>
 							<AuthenticityTokenInput />
 							<HoneypotInputs />
 							<Field
 								labelProps={{ children: 'Username' }}
 								inputProps={{
-									...conform.input(fields.username),
+									...getInputProps(fields.username),
 									autoFocus: true,
 									className: 'lowercase',
 								}}
@@ -286,7 +286,7 @@ export default function LoginPage() {
 
 							<Field
 								labelProps={{ children: 'Password' }}
-								inputProps={conform.input(fields.password, {
+								inputProps={getInputProps(fields.password, {
 									type: 'password',
 								})}
 								errors={fields.password.errors}
@@ -298,7 +298,7 @@ export default function LoginPage() {
 										htmlFor: fields.remember.id,
 										children: 'Remember me',
 									}}
-									buttonProps={conform.input(fields.remember, {
+									buttonProps={getInputProps(fields.remember, {
 										type: 'checkbox',
 									})}
 									errors={fields.remember.errors}
@@ -314,14 +314,15 @@ export default function LoginPage() {
 							</div>
 
 							<input
-								{...conform.input(fields.redirectTo, { type: 'hidden' })}
+								{...getInputProps(fields.redirectTo, { type: 'hidden' })}
 							/>
-							<ErrorList errors={form.errors} id={form.errorId} />
+
+							<ErrorList errors={meta.errors} id={meta.errorId} />
 
 							<div className="flex items-center justify-between gap-6 pt-3">
 								<StatusButton
 									className="w-full"
-									status={isPending ? 'pending' : actionData?.status ?? 'idle'}
+									status={isPending ? 'pending' : meta.status ?? 'idle'}
 									type="submit"
 									disabled={isPending}
 								>

@@ -1,5 +1,5 @@
-import { conform, useForm } from '@conform-to/react'
-import { getFieldsetConstraint, parse } from '@conform-to/zod'
+import { getFormProps, getInputProps, useForm } from '@conform-to/react'
+import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import * as E from '@react-email/components'
 import {
 	json,
@@ -36,7 +36,7 @@ export async function action({ request }: DataFunctionArgs) {
 	await validateCSRF(formData, request.headers)
 	checkHoneypot(formData)
 
-	const submission = await parse(formData, {
+	const submission = await parseWithZod(formData, {
 		schema: SignupSchema.superRefine(async (data, ctx) => {
 			const existingUser = await prisma.user.findUnique({
 				where: { email: data.email },
@@ -53,11 +53,10 @@ export async function action({ request }: DataFunctionArgs) {
 		}),
 		async: true,
 	})
-	if (submission.intent !== 'submit') {
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(submission.reject(), {
+			status: submission.type === 'submit' ? 400 : 200,
+		})
 	}
 	const { email } = submission.value
 	const { verifyUrl, redirectTo, otp } = await prepareVerification({
@@ -76,8 +75,9 @@ export async function action({ request }: DataFunctionArgs) {
 	if (response.status === 'success') {
 		return redirect(redirectTo.toString())
 	} else {
-		submission.error[''] = [response.error.message]
-		return json({ status: 'error', submission } as const, { status: 500 })
+		return json(submission.reject({ formError: [response.error.message] }), {
+			status: 500,
+		})
 	}
 }
 
@@ -118,12 +118,12 @@ export default function SignupRoute() {
 	const [searchParams] = useSearchParams()
 	const redirectTo = searchParams.get('redirectTo')
 
-	const [form, fields] = useForm({
+	const { meta, fields } = useForm({
 		id: 'signup-form',
-		constraint: getFieldsetConstraint(SignupSchema),
-		lastSubmission: actionData?.submission,
+		constraint: getZodConstraint(SignupSchema),
+		lastResult: actionData,
 		onValidate({ formData }) {
-			const result = parse(formData, { schema: SignupSchema })
+			const result = parseWithZod(formData, { schema: SignupSchema })
 			return result
 		},
 		shouldRevalidate: 'onBlur',
@@ -138,7 +138,7 @@ export default function SignupRoute() {
 				</p>
 			</div>
 			<div className="mx-auto mt-16 min-w-full max-w-sm sm:min-w-[368px]">
-				<Form method="POST" {...form.props}>
+				<Form method="POST" {...getFormProps(meta)}>
 					<AuthenticityTokenInput />
 					<HoneypotInputs />
 					<Field
@@ -146,13 +146,13 @@ export default function SignupRoute() {
 							htmlFor: fields.email.id,
 							children: 'Email',
 						}}
-						inputProps={{ ...conform.input(fields.email), autoFocus: true }}
+						inputProps={{ ...getInputProps(fields.email), autoFocus: true }}
 						errors={fields.email.errors}
 					/>
-					<ErrorList errors={form.errors} id={form.errorId} />
+					<ErrorList errors={meta.errors} id={meta.errorId} />
 					<StatusButton
 						className="w-full"
-						status={isPending ? 'pending' : actionData?.status ?? 'idle'}
+						status={isPending ? 'pending' : meta.status ?? 'idle'}
 						type="submit"
 						disabled={isPending}
 					>

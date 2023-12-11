@@ -1,5 +1,5 @@
-import { conform, useForm } from '@conform-to/react'
-import { getFieldsetConstraint, parse } from '@conform-to/zod'
+import { getFormProps, getInputProps, useForm } from '@conform-to/react'
+import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
 import { json, type DataFunctionArgs } from '@remix-run/node'
 import { Link, useFetcher, useLoaderData } from '@remix-run/react'
@@ -179,7 +179,7 @@ export default function EditUserProfile() {
 }
 
 async function profileUpdateAction({ userId, formData }: ProfileActionArgs) {
-	const submission = await parse(formData, {
+	const submission = await parseWithZod(formData, {
 		async: true,
 		schema: ProfileFormSchema.superRefine(async ({ username }, ctx) => {
 			const existingUsername = await prisma.user.findUnique({
@@ -195,11 +195,8 @@ async function profileUpdateAction({ userId, formData }: ProfileActionArgs) {
 			}
 		}),
 	})
-	if (submission.intent !== 'submit') {
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(submission.reject(), { status: submission.type === 'submit' ? 400 : 200 })
 	}
 
 	const data = submission.value
@@ -213,7 +210,7 @@ async function profileUpdateAction({ userId, formData }: ProfileActionArgs) {
 		},
 	})
 
-	return json({ status: 'success', submission } as const)
+	return json(submission.accept({ resetForm: true }))
 }
 
 function UpdateProfile() {
@@ -221,22 +218,21 @@ function UpdateProfile() {
 
 	const fetcher = useFetcher<typeof profileUpdateAction>()
 
-	const [form, fields] = useForm({
+	const {meta, fields} = useForm({
 		id: 'edit-profile',
-		constraint: getFieldsetConstraint(ProfileFormSchema),
-		lastSubmission: fetcher.data?.submission,
+		constraint: getZodConstraint(ProfileFormSchema),
+		lastResult: fetcher.data,
 		onValidate({ formData }) {
-			return parse(formData, { schema: ProfileFormSchema })
+			return parseWithZod(formData, { schema: ProfileFormSchema })
 		},
 		defaultValue: {
 			username: data.user.username,
-			name: data.user.name ?? '',
-			email: data.user.email,
+			name: data.user.name,
 		},
 	})
 
 	return (
-		<fetcher.Form method="POST" {...form.props}>
+		<fetcher.Form method="POST" {...getFormProps(meta)}>
 			<AuthenticityTokenInput />
 			<div className="grid grid-cols-6 gap-x-10">
 				<Field
@@ -245,18 +241,18 @@ function UpdateProfile() {
 						htmlFor: fields.username.id,
 						children: 'Username',
 					}}
-					inputProps={conform.input(fields.username)}
+					inputProps={getInputProps(fields.username)}
 					errors={fields.username.errors}
 				/>
 				<Field
 					className="col-span-3"
 					labelProps={{ htmlFor: fields.name.id, children: 'Name' }}
-					inputProps={conform.input(fields.name)}
+					inputProps={getInputProps(fields.name)}
 					errors={fields.name.errors}
 				/>
 			</div>
 
-			<ErrorList errors={form.errors} id={form.errorId} />
+			<ErrorList errors={meta.errors} id={meta.errorId} />
 
 			<div className="mt-8 flex justify-center">
 				<StatusButton
@@ -267,7 +263,7 @@ function UpdateProfile() {
 					status={
 						fetcher.state !== 'idle'
 							? 'pending'
-							: fetcher.data?.status ?? 'idle'
+							: meta.status ?? 'idle'
 					}
 				>
 					Save changes

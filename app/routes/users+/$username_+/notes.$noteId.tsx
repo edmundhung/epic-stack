@@ -1,5 +1,5 @@
-import { useForm } from '@conform-to/react'
-import { parse } from '@conform-to/zod'
+import { getFormProps, useForm } from '@conform-to/react'
+import { parseWithZod } from '@conform-to/zod'
 import { json, type DataFunctionArgs } from '@remix-run/node'
 import {
 	Form,
@@ -71,14 +71,13 @@ export async function action({ request }: DataFunctionArgs) {
 	const userId = await requireUserId(request)
 	const formData = await request.formData()
 	await validateCSRF(formData, request.headers)
-	const submission = parse(formData, {
+	const submission = parseWithZod(formData, {
 		schema: DeleteFormSchema,
 	})
-	if (submission.intent !== 'submit') {
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(submission.reject(), {
+			status: submission.type === 'submit' ? 400 : 200,
+		})
 	}
 
 	const { noteId } = submission.value
@@ -164,13 +163,13 @@ export default function NoteRoute() {
 export function DeleteNote({ id }: { id: string }) {
 	const actionData = useActionData<typeof action>()
 	const isPending = useIsPending()
-	const [form] = useForm({
+	const { meta } = useForm({
 		id: 'delete-note',
-		lastSubmission: actionData?.submission,
+		lastResult: actionData,
 	})
 
 	return (
-		<Form method="POST" {...form.props}>
+		<Form method="POST" {...getFormProps(meta)}>
 			<AuthenticityTokenInput />
 			<input type="hidden" name="noteId" value={id} />
 			<StatusButton
@@ -178,7 +177,7 @@ export function DeleteNote({ id }: { id: string }) {
 				name="intent"
 				value="delete-note"
 				variant="destructive"
-				status={isPending ? 'pending' : actionData?.status ?? 'idle'}
+				status={isPending ? 'pending' : meta.status ?? 'idle'}
 				disabled={isPending}
 				className="w-full max-md:aspect-square max-md:px-0"
 			>
@@ -186,7 +185,7 @@ export function DeleteNote({ id }: { id: string }) {
 					<span className="max-md:hidden">Delete</span>
 				</Icon>
 			</StatusButton>
-			<ErrorList errors={form.errors} id={form.errorId} />
+			<ErrorList errors={meta.errors} id={meta.errorId} />
 		</Form>
 	)
 }

@@ -1,5 +1,5 @@
-import { conform, useForm } from '@conform-to/react'
-import { getFieldsetConstraint, parse } from '@conform-to/zod'
+import { getFormProps, getInputProps, useForm } from '@conform-to/react'
+import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
 import { json, redirect, type DataFunctionArgs } from '@remix-run/node'
 import {
@@ -35,7 +35,10 @@ const VerifySchema = z.object({
 	code: z.string().min(6).max(6),
 })
 
-const ActionSchema = z.union([CancelSchema, VerifySchema])
+const ActionSchema = z.discriminatedUnion('intent', [
+	CancelSchema,
+	VerifySchema,
+])
 
 export const twoFAVerifyVerificationType = '2fa-verify'
 
@@ -75,7 +78,7 @@ export async function action({ request }: DataFunctionArgs) {
 	const formData = await request.formData()
 	await validateCSRF(formData, request.headers)
 
-	const submission = await parse(formData, {
+	const submission = await parseWithZod(formData, {
 		schema: () =>
 			ActionSchema.superRefine(async (data, ctx) => {
 				if (data.intent === 'cancel') return null
@@ -96,11 +99,10 @@ export async function action({ request }: DataFunctionArgs) {
 		async: true,
 	})
 
-	if (submission.intent !== 'submit') {
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(submission.reject(), {
+			status: submission.type === 'submit' ? 400 : 200,
+		})
 	}
 
 	switch (submission.value.intent) {
@@ -133,21 +135,16 @@ export default function TwoFactorRoute() {
 
 	const isPending = useIsPending()
 	const pendingIntent = isPending ? navigation.formData?.get('intent') : null
-	const lastSubmissionIntent = actionData?.submission.value?.intent
 
-	const [form, fields] = useForm({
+	const { meta, fields } = useForm({
 		id: 'verify-form',
-		constraint: getFieldsetConstraint(ActionSchema),
-		lastSubmission: actionData?.submission,
+		constraint: getZodConstraint(ActionSchema),
+		lastResult: actionData,
 		onValidate({ formData }) {
-			// otherwise, the best error zod gives us is "Invalid input" which is not
-			// enough
-			if (formData.get('intent') === 'cancel') {
-				return parse(formData, { schema: CancelSchema })
-			}
-			return parse(formData, { schema: VerifySchema })
+			return parseWithZod(formData, { schema: ActionSchema })
 		},
 	})
+	const lastSubmissionIntent = fields.intent.value
 
 	return (
 		<div>
@@ -174,19 +171,19 @@ export default function TwoFactorRoute() {
 					lose access to your account.
 				</p>
 				<div className="flex w-full max-w-xs flex-col justify-center gap-4">
-					<Form method="POST" {...form.props} className="flex-1">
+					<Form method="POST" {...getFormProps(meta)} className="flex-1">
 						<AuthenticityTokenInput />
 						<Field
 							labelProps={{
 								htmlFor: fields.code.id,
 								children: 'Code',
 							}}
-							inputProps={{ ...conform.input(fields.code), autoFocus: true }}
+							inputProps={{ ...getInputProps(fields.code), autoFocus: true }}
 							errors={fields.code.errors}
 						/>
 
 						<div className="min-h-[32px] px-4 pb-3 pt-1">
-							<ErrorList id={form.errorId} errors={form.errors} />
+							<ErrorList id={meta.errorId} errors={meta.errors} />
 						</div>
 
 						<div className="flex justify-between gap-4">
@@ -196,7 +193,7 @@ export default function TwoFactorRoute() {
 									pendingIntent === 'verify'
 										? 'pending'
 										: lastSubmissionIntent === 'verify'
-										  ? actionData?.status ?? 'idle'
+										  ? meta.status ?? 'idle'
 										  : 'idle'
 								}
 								type="submit"
@@ -212,7 +209,7 @@ export default function TwoFactorRoute() {
 									pendingIntent === 'cancel'
 										? 'pending'
 										: lastSubmissionIntent === 'cancel'
-										  ? actionData?.status ?? 'idle'
+										  ? meta.status ?? 'idle'
 										  : 'idle'
 								}
 								type="submit"

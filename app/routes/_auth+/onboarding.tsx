@@ -1,5 +1,5 @@
-import { conform, useForm } from '@conform-to/react'
-import { getFieldsetConstraint, parse } from '@conform-to/zod'
+import { getFormProps, getInputProps, useForm } from '@conform-to/react'
+import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import {
 	json,
 	redirect,
@@ -70,7 +70,7 @@ export async function action({ request }: DataFunctionArgs) {
 	const formData = await request.formData()
 	await validateCSRF(formData, request.headers)
 	checkHoneypot(formData)
-	const submission = await parse(formData, {
+	const submission = await parseWithZod(formData, {
 		schema: intent =>
 			SignupFormSchema.superRefine(async (data, ctx) => {
 				const existingUser = await prisma.user.findUnique({
@@ -86,7 +86,7 @@ export async function action({ request }: DataFunctionArgs) {
 					return
 				}
 			}).transform(async data => {
-				if (intent !== 'submit') return { ...data, session: null }
+				if (intent !== null) return { ...data, session: null }
 
 				const session = await signup({ ...data, email })
 				return { ...data, session }
@@ -94,11 +94,10 @@ export async function action({ request }: DataFunctionArgs) {
 		async: true,
 	})
 
-	if (submission.intent !== 'submit') {
-		return json({ status: 'idle', submission } as const)
-	}
 	if (!submission.value?.session) {
-		return json({ status: 'error', submission } as const, { status: 400 })
+		return json(submission.reject(), {
+			status: submission.type === 'submit' ? 400 : 200,
+		})
 	}
 
 	const { session, remember, redirectTo } = submission.value
@@ -149,13 +148,13 @@ export default function SignupRoute() {
 	const [searchParams] = useSearchParams()
 	const redirectTo = searchParams.get('redirectTo')
 
-	const [form, fields] = useForm({
+	const { meta, fields } = useForm({
 		id: 'onboarding-form',
-		constraint: getFieldsetConstraint(SignupFormSchema),
+		constraint: getZodConstraint(SignupFormSchema),
 		defaultValue: { redirectTo },
-		lastSubmission: actionData?.submission,
+		lastResult: actionData,
 		onValidate({ formData }) {
-			return parse(formData, { schema: SignupFormSchema })
+			return parseWithZod(formData, { schema: SignupFormSchema })
 		},
 		shouldRevalidate: 'onBlur',
 	})
@@ -173,14 +172,14 @@ export default function SignupRoute() {
 				<Form
 					method="POST"
 					className="mx-auto min-w-full max-w-sm sm:min-w-[368px]"
-					{...form.props}
+					{...getFormProps(meta)}
 				>
 					<AuthenticityTokenInput />
 					<HoneypotInputs />
 					<Field
 						labelProps={{ htmlFor: fields.username.id, children: 'Username' }}
 						inputProps={{
-							...conform.input(fields.username),
+							...getInputProps(fields.username),
 							autoComplete: 'username',
 							className: 'lowercase',
 						}}
@@ -189,7 +188,7 @@ export default function SignupRoute() {
 					<Field
 						labelProps={{ htmlFor: fields.name.id, children: 'Name' }}
 						inputProps={{
-							...conform.input(fields.name),
+							...getInputProps(fields.name),
 							autoComplete: 'name',
 						}}
 						errors={fields.name.errors}
@@ -197,7 +196,7 @@ export default function SignupRoute() {
 					<Field
 						labelProps={{ htmlFor: fields.password.id, children: 'Password' }}
 						inputProps={{
-							...conform.input(fields.password, { type: 'password' }),
+							...getInputProps(fields.password, { type: 'password' }),
 							autoComplete: 'new-password',
 						}}
 						errors={fields.password.errors}
@@ -209,7 +208,7 @@ export default function SignupRoute() {
 							children: 'Confirm Password',
 						}}
 						inputProps={{
-							...conform.input(fields.confirmPassword, { type: 'password' }),
+							...getInputProps(fields.confirmPassword, { type: 'password' }),
 							autoComplete: 'new-password',
 						}}
 						errors={fields.confirmPassword.errors}
@@ -221,7 +220,7 @@ export default function SignupRoute() {
 							children:
 								'Do you agree to our Terms of Service and Privacy Policy?',
 						}}
-						buttonProps={conform.input(
+						buttonProps={getInputProps(
 							fields.agreeToTermsOfServiceAndPrivacyPolicy,
 							{ type: 'checkbox' },
 						)}
@@ -232,17 +231,17 @@ export default function SignupRoute() {
 							htmlFor: fields.remember.id,
 							children: 'Remember me',
 						}}
-						buttonProps={conform.input(fields.remember, { type: 'checkbox' })}
+						buttonProps={getInputProps(fields.remember, { type: 'checkbox' })}
 						errors={fields.remember.errors}
 					/>
 
-					<input {...conform.input(fields.redirectTo, { type: 'hidden' })} />
-					<ErrorList errors={form.errors} id={form.errorId} />
+					<input {...getInputProps(fields.redirectTo, { type: 'hidden' })} />
+					<ErrorList errors={meta.errors} id={meta.errorId} />
 
 					<div className="flex items-center justify-between gap-6">
 						<StatusButton
 							className="w-full"
-							status={isPending ? 'pending' : actionData?.status ?? 'idle'}
+							status={isPending ? 'pending' : meta.status ?? 'idle'}
 							type="submit"
 							disabled={isPending}
 						>
