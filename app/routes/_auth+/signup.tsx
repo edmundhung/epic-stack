@@ -1,12 +1,16 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
 import * as E from '@react-email/components'
+import { parseSubmission, report } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { data, redirect, Form, useSearchParams } from 'react-router'
 import { HoneypotInputs } from 'remix-utils/honeypot/react'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
-import { ErrorList, Field } from '#app/components/forms.tsx'
+import { ErrorList, Field, useForm } from '#app/components/forms.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import {
 	ProviderConnectionForm,
@@ -24,39 +28,40 @@ export const handle: SEOHandle = {
 	getSitemapEntries: () => null,
 }
 
-const SignupSchema = z.object({
-	email: EmailSchema,
-})
+const SignupSchema = coerceZodFormData(
+	z.object({
+		email: EmailSchema,
+	}),
+)
 
 export async function action({ request }: Route.ActionArgs) {
 	const formData = await request.formData()
 
 	await checkHoneypot(formData)
 
-	const submission = await parseWithZod(formData, {
-		schema: SignupSchema.superRefine(async (data, ctx) => {
-			const existingUser = await prisma.user.findUnique({
-				where: { email: data.email },
-				select: { id: true },
+	const submission = parseSubmission(formData)
+	const result = await SignupSchema.superRefine(async (data, ctx) => {
+		const existingUser = await prisma.user.findUnique({
+			where: { email: data.email },
+			select: { id: true },
+		})
+		if (existingUser) {
+			ctx.addIssue({
+				path: ['email'],
+				code: z.ZodIssueCode.custom,
+				message: 'A user already exists with this email',
 			})
-			if (existingUser) {
-				ctx.addIssue({
-					path: ['email'],
-					code: z.ZodIssueCode.custom,
-					message: 'A user already exists with this email',
-				})
-				return
-			}
-		}),
-		async: true,
-	})
-	if (submission.status !== 'success') {
+			return
+		}
+	}).safeParseAsync(submission.value)
+
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
-	const { email } = submission.value
+	const { email } = result.data
 	const { verifyUrl, redirectTo, otp } = await prepareVerification({
 		period: 10 * 60,
 		request,
@@ -75,7 +80,9 @@ export async function action({ request }: Route.ActionArgs) {
 	} else {
 		return data(
 			{
-				result: submission.reply({ formErrors: [response.error.message] }),
+				result: report(submission, {
+					error: { formErrors: [response.error.message] },
+				}),
 			},
 			{
 				status: 500,
@@ -120,15 +127,13 @@ export default function SignupRoute({ actionData }: Route.ComponentProps) {
 	const [searchParams] = useSearchParams()
 	const redirectTo = searchParams.get('redirectTo')
 
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'signup-form',
 		constraint: getZodConstraint(SignupSchema),
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			const result = parseWithZod(formData, { schema: SignupSchema })
-			return result
+		onValidate(value) {
+			return resolveZodResult(SignupSchema.safeParse(value))
 		},
-		shouldRevalidate: 'onBlur',
 	})
 
 	return (
@@ -140,7 +145,7 @@ export default function SignupRoute({ actionData }: Route.ComponentProps) {
 				</p>
 			</div>
 			<div className="mx-auto mt-16 min-w-full max-w-sm sm:min-w-[368px]">
-				<Form method="POST" {...getFormProps(form)}>
+				<Form method="POST" {...form.props}>
 					<HoneypotInputs />
 					<Field
 						labelProps={{
@@ -148,7 +153,9 @@ export default function SignupRoute({ actionData }: Route.ComponentProps) {
 							children: 'Email',
 						}}
 						inputProps={{
-							...getInputProps(fields.email, { type: 'email' }),
+							...fields.email.props,
+							type: 'email',
+							defaultValue: fields.email.defaultValue,
 							autoFocus: true,
 							autoComplete: 'email',
 						}}

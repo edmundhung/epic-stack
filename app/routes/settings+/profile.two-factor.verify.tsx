@@ -1,10 +1,14 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
+import { parseSubmission, report, useFormData } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import * as QRCode from 'qrcode'
 import { data, redirect, Form, useNavigation } from 'react-router'
 import { z } from 'zod'
-import { ErrorList, OTPField } from '#app/components/forms.tsx'
+import { ErrorList, OTPField, useForm } from '#app/components/forms.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { isCodeValid } from '#app/routes/_auth+/verify.server.ts'
@@ -28,10 +32,9 @@ const VerifySchema = z.object({
 	code: z.string().min(6).max(6),
 })
 
-const ActionSchema = z.discriminatedUnion('intent', [
-	CancelSchema,
-	VerifySchema,
-])
+const ActionSchema = coerceZodFormData(
+	z.discriminatedUnion('intent', [CancelSchema, VerifySchema]),
+)
 
 export const twoFAVerifyVerificationType = '2fa-verify'
 
@@ -71,36 +74,32 @@ export async function loader({ request }: Route.LoaderArgs) {
 export async function action({ request }: Route.ActionArgs) {
 	const userId = await requireUserId(request)
 	const formData = await request.formData()
+	const submission = parseSubmission(formData)
+	const result = await ActionSchema.superRefine(async (data, ctx) => {
+		if (data.intent === 'cancel') return null
+		const codeIsValid = await isCodeValid({
+			code: data.code,
+			type: twoFAVerifyVerificationType,
+			target: userId,
+		})
+		if (!codeIsValid) {
+			ctx.addIssue({
+				path: ['code'],
+				code: z.ZodIssueCode.custom,
+				message: `Invalid code`,
+			})
+			return z.NEVER
+		}
+	}).safeParseAsync(submission.value)
 
-	const submission = await parseWithZod(formData, {
-		schema: () =>
-			ActionSchema.superRefine(async (data, ctx) => {
-				if (data.intent === 'cancel') return null
-				const codeIsValid = await isCodeValid({
-					code: data.code,
-					type: twoFAVerifyVerificationType,
-					target: userId,
-				})
-				if (!codeIsValid) {
-					ctx.addIssue({
-						path: ['code'],
-						code: z.ZodIssueCode.custom,
-						message: `Invalid code`,
-					})
-					return z.NEVER
-				}
-			}),
-		async: true,
-	})
-
-	if (submission.status !== 'success') {
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
 
-	switch (submission.value.intent) {
+	switch (result.data.intent) {
 		case 'cancel': {
 			await prisma.verification.deleteMany({
 				where: { type: twoFAVerifyVerificationType, target: userId },
@@ -132,15 +131,17 @@ export default function TwoFactorRoute({
 	const isPending = useIsPending()
 	const pendingIntent = isPending ? navigation.formData?.get('intent') : null
 
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'verify-form',
 		constraint: getZodConstraint(ActionSchema),
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: ActionSchema })
+		onValidate(value) {
+			return resolveZodResult(ActionSchema.safeParse(value))
 		},
 	})
-	const lastSubmissionIntent = fields.intent.value
+	const lastSubmissionIntent = useFormData(form.id, (formData) =>
+		formData?.get('intent')?.toString(),
+	)
 
 	return (
 		<div>
@@ -167,7 +168,7 @@ export default function TwoFactorRoute({
 					lose access to your account.
 				</p>
 				<div className="flex w-full max-w-xs flex-col justify-center gap-4">
-					<Form method="POST" {...getFormProps(form)} className="flex-1">
+					<Form method="POST" {...form.props} className="flex-1">
 						<div className="flex items-center justify-center">
 							<OTPField
 								labelProps={{
@@ -175,7 +176,9 @@ export default function TwoFactorRoute({
 									children: 'Code',
 								}}
 								inputProps={{
-									...getInputProps(fields.code, { type: 'text' }),
+									...fields.code.props,
+									type: 'text',
+									defaultValue: fields.code.defaultValue,
 									autoFocus: true,
 									autoComplete: 'one-time-code',
 								}}

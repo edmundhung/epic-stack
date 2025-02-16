@@ -1,10 +1,14 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { invariantResponse } from '@epic-web/invariant'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
+import { parseSubmission, report } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { data, Link, useFetcher } from 'react-router'
 import { z } from 'zod'
-import { ErrorList, Field } from '#app/components/forms.tsx'
+import { ErrorList, Field, useForm } from '#app/components/forms.tsx'
 import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
@@ -21,10 +25,12 @@ export const handle: SEOHandle = {
 	getSitemapEntries: () => null,
 }
 
-const ProfileFormSchema = z.object({
-	name: NameSchema.optional(),
-	username: UsernameSchema,
-})
+const ProfileFormSchema = coerceZodFormData(
+	z.object({
+		name: NameSchema.optional(),
+		username: UsernameSchema,
+	}),
+)
 
 export async function loader({ request }: Route.LoaderArgs) {
 	const userId = await requireUserId(request)
@@ -171,9 +177,9 @@ export default function EditUserProfile({ loaderData }: Route.ComponentProps) {
 }
 
 async function profileUpdateAction({ userId, formData }: ProfileActionArgs) {
-	const submission = await parseWithZod(formData, {
-		async: true,
-		schema: ProfileFormSchema.superRefine(async ({ username }, ctx) => {
+	const submission = parseSubmission(formData)
+	const result = await ProfileFormSchema.superRefine(
+		async ({ username }, ctx) => {
 			const existingUsername = await prisma.user.findUnique({
 				where: { username },
 				select: { id: true },
@@ -185,16 +191,16 @@ async function profileUpdateAction({ userId, formData }: ProfileActionArgs) {
 					message: 'A user already exists with this username',
 				})
 			}
-		}),
-	})
-	if (submission.status !== 'success') {
+		},
+	).safeParseAsync(submission.value)
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
 
-	const { username, name } = submission.value
+	const { username, name } = result.data
 
 	await prisma.user.update({
 		select: { username: true },
@@ -206,19 +212,19 @@ async function profileUpdateAction({ userId, formData }: ProfileActionArgs) {
 	})
 
 	return {
-		result: submission.reply(),
+		result: report(submission, {}),
 	}
 }
 
 function UpdateProfile({ loaderData }: { loaderData: Info['loaderData'] }) {
 	const fetcher = useFetcher<typeof profileUpdateAction>()
 
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'edit-profile',
 		constraint: getZodConstraint(ProfileFormSchema),
 		lastResult: fetcher.data?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: ProfileFormSchema })
+		onValidate(value) {
+			return resolveZodResult(ProfileFormSchema.safeParse(value))
 		},
 		defaultValue: {
 			username: loaderData.user.username,
@@ -227,7 +233,7 @@ function UpdateProfile({ loaderData }: { loaderData: Info['loaderData'] }) {
 	})
 
 	return (
-		<fetcher.Form method="POST" {...getFormProps(form)}>
+		<fetcher.Form method="POST" {...form.props}>
 			<div className="grid grid-cols-6 gap-x-10">
 				<Field
 					className="col-span-3"
@@ -235,13 +241,21 @@ function UpdateProfile({ loaderData }: { loaderData: Info['loaderData'] }) {
 						htmlFor: fields.username.id,
 						children: 'Username',
 					}}
-					inputProps={getInputProps(fields.username, { type: 'text' })}
+					inputProps={{
+						...fields.username.props,
+						type: 'text',
+						defaultValue: fields.username.defaultValue,
+					}}
 					errors={fields.username.errors}
 				/>
 				<Field
 					className="col-span-3"
 					labelProps={{ htmlFor: fields.name.id, children: 'Name' }}
-					inputProps={getInputProps(fields.name, { type: 'text' })}
+					inputProps={{
+						...fields.name.props,
+						type: 'text',
+						defaultValue: fields.name.defaultValue,
+					}}
 					errors={fields.name.errors}
 				/>
 			</div>
