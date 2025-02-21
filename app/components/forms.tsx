@@ -194,15 +194,15 @@ export function CheckboxField({
 					aria-describedby={errorId}
 					checked={input.value === checkedValue}
 					onCheckedChange={(state) => {
-						input.changed(state.valueOf() ? checkedValue : '')
+						input.change(state.valueOf() ? checkedValue : '')
 						buttonProps.onCheckedChange?.(state)
 					}}
 					onFocus={(event) => {
-						input.focused()
+						input.focus()
 						buttonProps.onFocus?.(event)
 					}}
 					onBlur={(event) => {
-						input.blurred()
+						input.blur()
 						buttonProps.onBlur?.(event)
 					}}
 					type="button"
