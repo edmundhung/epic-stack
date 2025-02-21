@@ -1,12 +1,16 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { invariantResponse } from '@epic-web/invariant'
 import { type FileUpload, parseFormData } from '@mjackson/form-data-parser'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
+import { parseSubmission, report, useFormData } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { useState } from 'react'
 import { data, redirect, Form, useNavigation } from 'react-router'
 import { z } from 'zod'
-import { ErrorList } from '#app/components/forms.tsx'
+import { ErrorList, useForm } from '#app/components/forms.tsx'
 import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
@@ -43,10 +47,9 @@ const NewImageSchema = z.object({
 		),
 })
 
-const PhotoFormSchema = z.discriminatedUnion('intent', [
-	DeleteImageSchema,
-	NewImageSchema,
-])
+const PhotoFormSchema = coerceZodFormData(
+	z.discriminatedUnion('intent', [DeleteImageSchema, NewImageSchema]),
+)
 
 export async function loader({ request }: Route.LoaderArgs) {
 	const userId = await requireUserId(request)
@@ -71,33 +74,31 @@ export async function action({ request }: Route.ActionArgs) {
 		{ maxFileSize: MAX_SIZE },
 		async (file: FileUpload) => uploadHandler(file),
 	)
-	const submission = await parseWithZod(formData, {
-		schema: PhotoFormSchema.transform(async (data) => {
-			if (data.intent === 'delete') return { intent: 'delete' }
-			if (data.photoFile.size <= 0) return z.NEVER
-			return {
-				intent: data.intent,
-				image: {
-					contentType: data.photoFile.type,
-					blob: Buffer.from(await data.photoFile.arrayBuffer()),
-				},
-			}
-		}),
-		async: true,
-	})
+	const submission = parseSubmission(formData)
+	const result = await PhotoFormSchema.transform(async (data) => {
+		if (data.intent === 'delete') return { intent: 'delete' }
+		if (data.photoFile.size <= 0) return z.NEVER
+		return {
+			intent: data.intent,
+			image: {
+				contentType: data.photoFile.type,
+				blob: Buffer.from(await data.photoFile.arrayBuffer()),
+			},
+		}
+	}).safeParseAsync(submission.value)
 
-	if (submission.status !== 'success') {
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
 
-	const { image, intent } = submission.value
+	const { image, intent } = result.data
 
 	if (intent === 'delete') {
 		await prisma.userImage.deleteMany({ where: { userId } })
-		return redirect('/settings/profile')
+		throw redirect('/settings/profile')
 	}
 
 	await prisma.$transaction(async ($prisma) => {
@@ -108,7 +109,7 @@ export async function action({ request }: Route.ActionArgs) {
 		})
 	})
 
-	return redirect('/settings/profile')
+	throw redirect('/settings/profile')
 }
 
 export default function PhotoRoute({
@@ -119,19 +120,20 @@ export default function PhotoRoute({
 
 	const navigation = useNavigation()
 
-	const [form, fields] = useForm({
+	const { form, fields, intent } = useForm({
 		id: 'profile-photo',
 		constraint: getZodConstraint(PhotoFormSchema),
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: PhotoFormSchema })
+		onValidate(value) {
+			return resolveZodResult(PhotoFormSchema.safeParse(value))
 		},
-		shouldRevalidate: 'onBlur',
 	})
+	const lastSubmissionIntent = useFormData(form.id, (formData) =>
+		formData?.get('intent')?.toString(),
+	)
 
 	const isPending = useIsPending()
 	const pendingIntent = isPending ? navigation.formData?.get('intent') : null
-	const lastSubmissionIntent = fields.intent.value
 
 	const [newImageSrc, setNewImageSrc] = useState<string | null>(null)
 
@@ -142,7 +144,7 @@ export default function PhotoRoute({
 				encType="multipart/form-data"
 				className="flex flex-col items-center justify-center gap-10"
 				onReset={() => setNewImageSrc(null)}
-				{...getFormProps(form)}
+				{...form.props}
 			>
 				<img
 					src={
@@ -161,7 +163,8 @@ export default function PhotoRoute({
 						an image has been selected). Progressive enhancement FTW!
 					*/}
 					<input
-						{...getInputProps(fields.photoFile, { type: 'file' })}
+						type="file"
+						{...fields.photoFile.props}
 						accept="image/*"
 						className="peer sr-only"
 						required
@@ -203,7 +206,8 @@ export default function PhotoRoute({
 					<Button
 						variant="destructive"
 						className="peer-invalid:hidden"
-						{...form.reset.getButtonProps()}
+						type="button"
+						onClick={() => intent.reset()}
 					>
 						<Icon name="trash">Reset</Icon>
 					</Button>

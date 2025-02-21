@@ -1,9 +1,13 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
+import { parseSubmission, report } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { data, redirect, Form } from 'react-router'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
-import { ErrorList, Field } from '#app/components/forms.tsx'
+import { ErrorList, Field, useForm } from '#app/components/forms.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { requireAnonymous, resetUserPassword } from '#app/utils/auth.server.ts'
 import { useIsPending } from '#app/utils/misc.tsx'
@@ -17,7 +21,7 @@ export const handle: SEOHandle = {
 
 export const resetPasswordUsernameSessionKey = 'resetPasswordUsername'
 
-const ResetPasswordSchema = PasswordAndConfirmPasswordSchema
+const ResetPasswordSchema = coerceZodFormData(PasswordAndConfirmPasswordSchema)
 
 async function requireResetPasswordUsername(request: Request) {
 	await requireAnonymous(request)
@@ -41,16 +45,16 @@ export async function loader({ request }: Route.LoaderArgs) {
 export async function action({ request }: Route.ActionArgs) {
 	const resetPasswordUsername = await requireResetPasswordUsername(request)
 	const formData = await request.formData()
-	const submission = parseWithZod(formData, {
-		schema: ResetPasswordSchema,
-	})
-	if (submission.status !== 'success') {
+	const submission = parseSubmission(formData)
+	const result = ResetPasswordSchema.safeParse(submission.value)
+
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
-	const { password } = submission.value
+	const { password } = result.data
 
 	await resetUserPassword({ username: resetPasswordUsername, password })
 	const verifySession = await verifySessionStorage.getSession()
@@ -71,14 +75,13 @@ export default function ResetPasswordPage({
 }: Route.ComponentProps) {
 	const isPending = useIsPending()
 
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'reset-password',
 		constraint: getZodConstraint(ResetPasswordSchema),
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: ResetPasswordSchema })
+		onValidate(value) {
+			return resolveZodResult(ResetPasswordSchema.safeParse(value))
 		},
-		shouldRevalidate: 'onBlur',
 	})
 
 	return (
@@ -91,14 +94,16 @@ export default function ResetPasswordPage({
 				</p>
 			</div>
 			<div className="mx-auto mt-16 min-w-full max-w-sm sm:min-w-[368px]">
-				<Form method="POST" {...getFormProps(form)}>
+				<Form method="POST" {...form.props}>
 					<Field
 						labelProps={{
 							htmlFor: fields.password.id,
 							children: 'New Password',
 						}}
 						inputProps={{
-							...getInputProps(fields.password, { type: 'password' }),
+							...fields.password.props,
+							type: 'password',
+							defaultValue: fields.password.defaultValue,
 							autoComplete: 'new-password',
 							autoFocus: true,
 						}}
@@ -110,7 +115,9 @@ export default function ResetPasswordPage({
 							children: 'Confirm Password',
 						}}
 						inputProps={{
-							...getInputProps(fields.confirmPassword, { type: 'password' }),
+							...fields.confirmPassword.props,
+							type: 'password',
+							defaultValue: fields.confirmPassword.defaultValue,
 							autoComplete: 'new-password',
 						}}
 						errors={fields.confirmPassword.errors}

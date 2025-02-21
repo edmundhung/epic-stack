@@ -1,9 +1,13 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
+import { parseSubmission, report } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { data, redirect, Form } from 'react-router'
 import { z } from 'zod'
-import { ErrorList, Field } from '#app/components/forms.tsx'
+import { ErrorList, Field, useForm } from '#app/components/forms.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import {
@@ -27,9 +31,11 @@ export const handle: BreadcrumbHandle & SEOHandle = {
 
 export const newEmailAddressSessionKey = 'new-email-address'
 
-const ChangeEmailSchema = z.object({
-	email: EmailSchema,
-})
+const ChangeEmailSchema = coerceZodFormData(
+	z.object({
+		email: EmailSchema,
+	}),
+)
 
 export async function loader({ request }: Route.LoaderArgs) {
 	await requireRecentVerification(request)
@@ -48,26 +54,24 @@ export async function loader({ request }: Route.LoaderArgs) {
 export async function action({ request }: Route.ActionArgs) {
 	const userId = await requireUserId(request)
 	const formData = await request.formData()
-	const submission = await parseWithZod(formData, {
-		schema: ChangeEmailSchema.superRefine(async (data, ctx) => {
-			const existingUser = await prisma.user.findUnique({
-				where: { email: data.email },
+	const submission = parseSubmission(formData)
+	const result = await ChangeEmailSchema.superRefine(async (data, ctx) => {
+		const existingUser = await prisma.user.findUnique({
+			where: { email: data.email },
+		})
+		if (existingUser) {
+			ctx.addIssue({
+				path: ['email'],
+				code: z.ZodIssueCode.custom,
+				message: 'This email is already in use.',
 			})
-			if (existingUser) {
-				ctx.addIssue({
-					path: ['email'],
-					code: z.ZodIssueCode.custom,
-					message: 'This email is already in use.',
-				})
-			}
-		}),
-		async: true,
-	})
+		}
+	}).safeParseAsync(submission.value)
 
-	if (submission.status !== 'success') {
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
 	const { otp, redirectTo, verifyUrl } = await prepareVerification({
@@ -78,14 +82,14 @@ export async function action({ request }: Route.ActionArgs) {
 	})
 
 	const response = await sendEmail({
-		to: submission.value.email,
+		to: result.data.email,
 		subject: `Epic Notes Email Change Verification`,
 		react: <EmailChangeEmail verifyUrl={verifyUrl.toString()} otp={otp} />,
 	})
 
 	if (response.status === 'success') {
 		const verifySession = await verifySessionStorage.getSession()
-		verifySession.set(newEmailAddressSessionKey, submission.value.email)
+		verifySession.set(newEmailAddressSessionKey, result.data.email)
 		return redirect(redirectTo.toString(), {
 			headers: {
 				'set-cookie': await verifySessionStorage.commitSession(verifySession),
@@ -93,7 +97,11 @@ export async function action({ request }: Route.ActionArgs) {
 		})
 	} else {
 		return data(
-			{ result: submission.reply({ formErrors: [response.error.message] }) },
+			{
+				result: report(submission, {
+					error: { formErrors: [response.error.message] },
+				}),
+			},
 			{ status: 500 },
 		)
 	}
@@ -103,12 +111,12 @@ export default function ChangeEmailIndex({
 	loaderData,
 	actionData,
 }: Route.ComponentProps) {
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'change-email-form',
 		constraint: getZodConstraint(ChangeEmailSchema),
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: ChangeEmailSchema })
+		onValidate(values) {
+			return resolveZodResult(ChangeEmailSchema.safeParse(values))
 		},
 	})
 
@@ -122,11 +130,13 @@ export default function ChangeEmailIndex({
 				{loaderData.user.email}.
 			</p>
 			<div className="mx-auto mt-5 max-w-sm">
-				<Form method="POST" {...getFormProps(form)}>
+				<Form method="POST" {...form.props}>
 					<Field
 						labelProps={{ children: 'New Email' }}
 						inputProps={{
-							...getInputProps(fields.email, { type: 'email' }),
+							...fields.email.props,
+							type: 'email',
+							defaultValue: fields.email.defaultValue,
 							autoComplete: 'email',
 						}}
 						errors={fields.email.errors}

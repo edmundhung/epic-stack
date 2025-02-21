@@ -1,5 +1,5 @@
-import { type Submission } from '@conform-to/react'
-import { parseWithZod } from '@conform-to/zod'
+import { type Submission, parseSubmission, report } from 'conform-react'
+import { resolveZodResult } from 'conform-zod'
 import { data } from 'react-router'
 import { z } from 'zod'
 import { handleVerification as handleChangeEmailVerification } from '#app/routes/settings+/profile.change-email.server.tsx'
@@ -27,11 +27,8 @@ import {
 
 export type VerifyFunctionArgs = {
 	request: Request
-	submission: Submission<
-		z.input<typeof VerifySchema>,
-		string[],
-		z.output<typeof VerifySchema>
-	>
+	submission: Submission
+	resultData: z.output<typeof VerifySchema>
 	body: FormData | URLSearchParams
 }
 
@@ -141,60 +138,58 @@ export async function validateRequest(
 	request: Request,
 	body: URLSearchParams | FormData,
 ) {
-	const submission = await parseWithZod(body, {
-		schema: VerifySchema.superRefine(async (data, ctx) => {
-			const codeIsValid = await isCodeValid({
-				code: data[codeQueryParam],
-				type: data[typeQueryParam],
-				target: data[targetQueryParam],
+	const submission = parseSubmission(body);
+	const result = await VerifySchema.superRefine(async (data, ctx) => {
+		const codeIsValid = await isCodeValid({
+			code: data[codeQueryParam],
+			type: data[typeQueryParam],
+			target: data[targetQueryParam],
+		})
+		if (!codeIsValid) {
+			ctx.addIssue({
+				path: ['code'],
+				code: z.ZodIssueCode.custom,
+				message: `Invalid code`,
 			})
-			if (!codeIsValid) {
-				ctx.addIssue({
-					path: ['code'],
-					code: z.ZodIssueCode.custom,
-					message: `Invalid code`,
-				})
-				return
-			}
-		}),
-		async: true,
-	})
+			return
+		}
+	}).safeParseAsync(submission.value);
 
-	if (submission.status !== 'success') {
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
 
-	const { value: submissionValue } = submission
+	const resultData = result.data
 
 	async function deleteVerification() {
 		await prisma.verification.delete({
 			where: {
 				target_type: {
-					type: submissionValue[typeQueryParam],
-					target: submissionValue[targetQueryParam],
+					type: resultData[typeQueryParam],
+					target: resultData[targetQueryParam],
 				},
 			},
 		})
 	}
 
-	switch (submissionValue[typeQueryParam]) {
+	switch (resultData[typeQueryParam]) {
 		case 'reset-password': {
 			await deleteVerification()
-			return handleResetPasswordVerification({ request, body, submission })
+			return handleResetPasswordVerification({ request, body, submission, resultData })
 		}
 		case 'onboarding': {
 			await deleteVerification()
-			return handleOnboardingVerification({ request, body, submission })
+			return handleOnboardingVerification({ request, body, submission, resultData })
 		}
 		case 'change-email': {
 			await deleteVerification()
-			return handleChangeEmailVerification({ request, body, submission })
+			return handleChangeEmailVerification({ request, body, submission, resultData })
 		}
 		case '2fa': {
-			return handleLoginTwoFactorVerification({ request, body, submission })
+			return handleLoginTwoFactorVerification({ request, body, submission, resultData })
 		}
 	}
 }

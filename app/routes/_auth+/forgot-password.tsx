@@ -1,12 +1,16 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
 import * as E from '@react-email/components'
+import { parseSubmission, report } from 'conform-react'
+import {
+	getZodConstraint,
+	coerceZodFormData,
+	resolveZodResult,
+} from 'conform-zod'
 import { data, redirect, Link, useFetcher } from 'react-router'
 import { HoneypotInputs } from 'remix-utils/honeypot/react'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
-import { ErrorList, Field } from '#app/components/forms.tsx'
+import { ErrorList, Field, useForm } from '#app/components/forms.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { prisma } from '#app/utils/db.server.ts'
 import { sendEmail } from '#app/utils/email.server.ts'
@@ -19,42 +23,47 @@ export const handle: SEOHandle = {
 	getSitemapEntries: () => null,
 }
 
-const ForgotPasswordSchema = z.object({
-	usernameOrEmail: z.union([EmailSchema, UsernameSchema]),
-})
+const ForgotPasswordSchema = coerceZodFormData(
+	z.object({
+		usernameOrEmail: z.union([EmailSchema, UsernameSchema]),
+	}),
+)
 
 export async function action({ request }: Route.ActionArgs) {
 	const formData = await request.formData()
 	await checkHoneypot(formData)
-	const submission = await parseWithZod(formData, {
-		schema: ForgotPasswordSchema.superRefine(async (data, ctx) => {
-			const user = await prisma.user.findFirst({
-				where: {
-					OR: [
-						{ email: data.usernameOrEmail },
-						{ username: data.usernameOrEmail },
-					],
-				},
-				select: { id: true },
+	const submission = parseSubmission(formData)
+	const result = await ForgotPasswordSchema.superRefine(async (data, ctx) => {
+		const user = await prisma.user.findFirst({
+			where: {
+				OR: [
+					{ email: data.usernameOrEmail },
+					{ username: data.usernameOrEmail },
+				],
+			},
+			select: { id: true },
+		})
+		if (!user) {
+			ctx.addIssue({
+				path: ['usernameOrEmail'],
+				code: z.ZodIssueCode.custom,
+				message: 'No user exists with this username or email',
 			})
-			if (!user) {
-				ctx.addIssue({
-					path: ['usernameOrEmail'],
-					code: z.ZodIssueCode.custom,
-					message: 'No user exists with this username or email',
-				})
-				return
-			}
-		}),
-		async: true,
-	})
-	if (submission.status !== 'success') {
+			return
+		}
+	}).safeParseAsync(submission.value)
+
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{
+				result: report(submission, {
+					error: resolveZodResult(result),
+				}),
+			},
+			{ status: 400 },
 		)
 	}
-	const { usernameOrEmail } = submission.value
+	const { usernameOrEmail } = result.data
 
 	const user = await prisma.user.findFirstOrThrow({
 		where: { OR: [{ email: usernameOrEmail }, { username: usernameOrEmail }] },
@@ -80,7 +89,13 @@ export async function action({ request }: Route.ActionArgs) {
 		return redirect(redirectTo.toString())
 	} else {
 		return data(
-			{ result: submission.reply({ formErrors: [response.error.message] }) },
+			{
+				result: report<z.infer<typeof ForgotPasswordSchema>>(submission, {
+					error: {
+						formErrors: [response.error.message],
+					},
+				}),
+			},
 			{ status: 500 },
 		)
 	}
@@ -120,14 +135,13 @@ export const meta: Route.MetaFunction = () => {
 export default function ForgotPasswordRoute() {
 	const forgotPassword = useFetcher<typeof action>()
 
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'forgot-password-form',
 		constraint: getZodConstraint(ForgotPasswordSchema),
 		lastResult: forgotPassword.data?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: ForgotPasswordSchema })
+		onValidate(value) {
+			return resolveZodResult(ForgotPasswordSchema.safeParse(value))
 		},
-		shouldRevalidate: 'onBlur',
 	})
 
 	return (
@@ -140,7 +154,7 @@ export default function ForgotPasswordRoute() {
 					</p>
 				</div>
 				<div className="mx-auto mt-16 min-w-full max-w-sm sm:min-w-[368px]">
-					<forgotPassword.Form method="POST" {...getFormProps(form)}>
+					<forgotPassword.Form method="POST" {...form.props}>
 						<HoneypotInputs />
 						<div>
 							<Field
@@ -149,8 +163,10 @@ export default function ForgotPasswordRoute() {
 									children: 'Username or Email',
 								}}
 								inputProps={{
+									...fields.usernameOrEmail.props,
 									autoFocus: true,
-									...getInputProps(fields.usernameOrEmail, { type: 'text' }),
+									type: 'text',
+									defaultValue: fields.usernameOrEmail.defaultValue,
 								}}
 								errors={fields.usernameOrEmail.errors}
 							/>

@@ -1,10 +1,19 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
+import { parseSubmission, report } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { data, redirect, Form, useSearchParams } from 'react-router'
 import { HoneypotInputs } from 'remix-utils/honeypot/react'
 import { safeRedirect } from 'remix-utils/safe-redirect'
 import { z } from 'zod'
-import { CheckboxField, ErrorList, Field } from '#app/components/forms.tsx'
+import {
+	CheckboxField,
+	ErrorList,
+	Field,
+	useForm,
+} from '#app/components/forms.tsx'
 import { Spacer } from '#app/components/spacer.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { requireAnonymous, sessionKey, signup } from '#app/utils/auth.server.ts'
@@ -23,18 +32,20 @@ import { type Route } from './+types/onboarding.ts'
 
 export const onboardingEmailSessionKey = 'onboardingEmail'
 
-const SignupFormSchema = z
-	.object({
-		username: UsernameSchema,
-		name: NameSchema,
-		agreeToTermsOfServiceAndPrivacyPolicy: z.boolean({
-			required_error:
-				'You must agree to the terms of service and privacy policy',
-		}),
-		remember: z.boolean().optional(),
-		redirectTo: z.string().optional(),
-	})
-	.and(PasswordAndConfirmPasswordSchema)
+const SignupFormSchema = coerceZodFormData(
+	z
+		.object({
+			username: UsernameSchema,
+			name: NameSchema,
+			agreeToTermsOfServiceAndPrivacyPolicy: z.boolean({
+				required_error:
+					'You must agree to the terms of service and privacy policy',
+			}),
+			remember: z.boolean().optional(),
+			redirectTo: z.string().optional(),
+		})
+		.and(PasswordAndConfirmPasswordSchema),
+)
 
 async function requireOnboardingEmail(request: Request) {
 	await requireAnonymous(request)
@@ -57,38 +68,35 @@ export async function action({ request }: Route.ActionArgs) {
 	const email = await requireOnboardingEmail(request)
 	const formData = await request.formData()
 	await checkHoneypot(formData)
-	const submission = await parseWithZod(formData, {
-		schema: (intent) =>
-			SignupFormSchema.superRefine(async (data, ctx) => {
-				const existingUser = await prisma.user.findUnique({
-					where: { username: data.username },
-					select: { id: true },
-				})
-				if (existingUser) {
-					ctx.addIssue({
-						path: ['username'],
-						code: z.ZodIssueCode.custom,
-						message: 'A user already exists with this username',
-					})
-					return
-				}
-			}).transform(async (data) => {
-				if (intent !== null) return { ...data, session: null }
-
-				const session = await signup({ ...data, email })
-				return { ...data, session }
-			}),
-		async: true,
+	const submission = parseSubmission(formData)
+	const result = await SignupFormSchema.superRefine(async (data, ctx) => {
+		const existingUser = await prisma.user.findUnique({
+			where: { username: data.username },
+			select: { id: true },
+		})
+		if (existingUser) {
+			ctx.addIssue({
+				path: ['username'],
+				code: z.ZodIssueCode.custom,
+				message: 'A user already exists with this username',
+			})
+			return
+		}
 	})
+		.transform(async (data) => {
+			const session = await signup({ ...data, email })
+			return { ...data, session }
+		})
+		.safeParseAsync(submission.value)
 
-	if (submission.status !== 'success' || !submission.value.session) {
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
 
-	const { session, remember, redirectTo } = submission.value
+	const { session, remember, redirectTo } = result.data
 
 	const authSession = await authSessionStorage.getSession(
 		request.headers.get('cookie'),
@@ -126,15 +134,14 @@ export default function OnboardingRoute({
 	const [searchParams] = useSearchParams()
 	const redirectTo = searchParams.get('redirectTo')
 
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'onboarding-form',
 		constraint: getZodConstraint(SignupFormSchema),
 		defaultValue: { redirectTo },
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: SignupFormSchema })
+		onValidate(value) {
+			return resolveZodResult(SignupFormSchema.safeParse(value))
 		},
-		shouldRevalidate: 'onBlur',
 	})
 
 	return (
@@ -150,13 +157,15 @@ export default function OnboardingRoute({
 				<Form
 					method="POST"
 					className="mx-auto min-w-full max-w-sm sm:min-w-[368px]"
-					{...getFormProps(form)}
+					{...form.props}
 				>
 					<HoneypotInputs />
 					<Field
 						labelProps={{ htmlFor: fields.username.id, children: 'Username' }}
 						inputProps={{
-							...getInputProps(fields.username, { type: 'text' }),
+							...fields.username.props,
+							type: 'text',
+							defaultValue: fields.username.defaultValue,
 							autoComplete: 'username',
 							className: 'lowercase',
 						}}
@@ -165,7 +174,9 @@ export default function OnboardingRoute({
 					<Field
 						labelProps={{ htmlFor: fields.name.id, children: 'Name' }}
 						inputProps={{
-							...getInputProps(fields.name, { type: 'text' }),
+							...fields.name.props,
+							type: 'text',
+							defaultValue: fields.name.defaultValue,
 							autoComplete: 'name',
 						}}
 						errors={fields.name.errors}
@@ -173,7 +184,9 @@ export default function OnboardingRoute({
 					<Field
 						labelProps={{ htmlFor: fields.password.id, children: 'Password' }}
 						inputProps={{
-							...getInputProps(fields.password, { type: 'password' }),
+							...fields.password.props,
+							type: 'password',
+							defaultValue: fields.password.defaultValue,
 							autoComplete: 'new-password',
 						}}
 						errors={fields.password.errors}
@@ -185,7 +198,9 @@ export default function OnboardingRoute({
 							children: 'Confirm Password',
 						}}
 						inputProps={{
-							...getInputProps(fields.confirmPassword, { type: 'password' }),
+							...fields.confirmPassword.props,
+							type: 'password',
+							defaultValue: fields.confirmPassword.defaultValue,
 							autoComplete: 'new-password',
 						}}
 						errors={fields.confirmPassword.errors}
@@ -197,10 +212,13 @@ export default function OnboardingRoute({
 							children:
 								'Do you agree to our Terms of Service and Privacy Policy?',
 						}}
-						buttonProps={getInputProps(
-							fields.agreeToTermsOfServiceAndPrivacyPolicy,
-							{ type: 'checkbox' },
-						)}
+						buttonProps={{
+							...fields.agreeToTermsOfServiceAndPrivacyPolicy.props,
+							type: 'checkbox',
+							defaultChecked:
+								fields.agreeToTermsOfServiceAndPrivacyPolicy.defaultValue ===
+								'on',
+						}}
 						errors={fields.agreeToTermsOfServiceAndPrivacyPolicy.errors}
 					/>
 					<CheckboxField
@@ -208,11 +226,19 @@ export default function OnboardingRoute({
 							htmlFor: fields.remember.id,
 							children: 'Remember me',
 						}}
-						buttonProps={getInputProps(fields.remember, { type: 'checkbox' })}
+						buttonProps={{
+							...fields.remember.props,
+							type: 'checkbox',
+							defaultChecked: fields.remember.defaultValue === 'on',
+						}}
 						errors={fields.remember.errors}
 					/>
 
-					<input {...getInputProps(fields.redirectTo, { type: 'hidden' })} />
+					<input
+						{...fields.redirectTo.props}
+						type="hidden"
+						defaultValue={fields.redirectTo.defaultValue}
+					/>
 					<ErrorList errors={form.errors} id={form.errorId} />
 
 					<div className="flex items-center justify-between gap-6">

@@ -1,12 +1,12 @@
-import { getFormProps, useForm } from '@conform-to/react'
-import { parseWithZod } from '@conform-to/zod'
 import { invariantResponse } from '@epic-web/invariant'
+import { parseSubmission, report } from 'conform-react'
+import { resolveZodResult } from 'conform-zod'
 import { formatDistanceToNow } from 'date-fns'
 import { data, Form, Link } from 'react-router'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
 import { floatingToolbarClassName } from '#app/components/floating-toolbar.tsx'
-import { ErrorList } from '#app/components/forms.tsx'
+import { ErrorList, useForm } from '#app/components/forms.tsx'
 import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
@@ -53,17 +53,16 @@ const DeleteFormSchema = z.object({
 export async function action({ request }: Route.ActionArgs) {
 	const userId = await requireUserId(request)
 	const formData = await request.formData()
-	const submission = parseWithZod(formData, {
-		schema: DeleteFormSchema,
-	})
-	if (submission.status !== 'success') {
+	const submission = parseSubmission(formData)
+	const result = DeleteFormSchema.safeParse(submission.value)
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
 
-	const { noteId } = submission.value
+	const { noteId } = result.data
 
 	const note = await prisma.note.findFirst({
 		select: { id: true, ownerId: true, owner: { select: { username: true } } },
@@ -155,13 +154,16 @@ export function DeleteNote({
 	actionData: Info['actionData'] | undefined
 }) {
 	const isPending = useIsPending()
-	const [form] = useForm({
+	const { form } = useForm({
 		id: 'delete-note',
 		lastResult: actionData?.result,
+		onValidate() {
+			return undefined
+		},
 	})
 
 	return (
-		<Form method="POST" {...getFormProps(form)}>
+		<Form method="POST" {...form.props}>
 			<input type="hidden" name="noteId" value={id} />
 			<StatusButton
 				type="submit"

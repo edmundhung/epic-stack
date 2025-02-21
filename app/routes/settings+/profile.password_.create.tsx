@@ -1,8 +1,12 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
+import { parseSubmission, report } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { data, redirect, Form, Link } from 'react-router'
-import { ErrorList, Field } from '#app/components/forms.tsx'
+import { ErrorList, Field, useForm } from '#app/components/forms.tsx'
 import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
@@ -18,7 +22,7 @@ export const handle: BreadcrumbHandle & SEOHandle = {
 	getSitemapEntries: () => null,
 }
 
-const CreatePasswordForm = PasswordAndConfirmPasswordSchema
+const CreatePasswordForm = coerceZodFormData(PasswordAndConfirmPasswordSchema)
 
 async function requireNoPassword(userId: string) {
 	const password = await prisma.password.findUnique({
@@ -40,22 +44,21 @@ export async function action({ request }: Route.ActionArgs) {
 	const userId = await requireUserId(request)
 	await requireNoPassword(userId)
 	const formData = await request.formData()
-	const submission = await parseWithZod(formData, {
-		async: true,
-		schema: CreatePasswordForm,
-	})
-	if (submission.status !== 'success') {
+	const submission = parseSubmission(formData)
+	const result = CreatePasswordForm.safeParse(submission.value)
+	if (!result.success) {
 		return data(
 			{
-				result: submission.reply({
+				result: report(submission, {
+					error: resolveZodResult(result),
 					hideFields: ['password', 'confirmPassword'],
 				}),
 			},
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ status: 400 },
 		)
 	}
 
-	const { password } = submission.value
+	const { password } = result.data
 
 	await prisma.user.update({
 		select: { username: true },
@@ -77,22 +80,23 @@ export default function CreatePasswordRoute({
 }: Route.ComponentProps) {
 	const isPending = useIsPending()
 
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'password-create-form',
 		constraint: getZodConstraint(CreatePasswordForm),
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: CreatePasswordForm })
+		onValidate(value) {
+			return resolveZodResult(CreatePasswordForm.safeParse(value))
 		},
-		shouldRevalidate: 'onBlur',
 	})
 
 	return (
-		<Form method="POST" {...getFormProps(form)} className="mx-auto max-w-md">
+		<Form method="POST" {...form.props} className="mx-auto max-w-md">
 			<Field
 				labelProps={{ children: 'New Password' }}
 				inputProps={{
-					...getInputProps(fields.password, { type: 'password' }),
+					...fields.password.props,
+					type: 'password',
+					defaultValue: fields.password.defaultValue,
 					autoComplete: 'new-password',
 				}}
 				errors={fields.password.errors}
@@ -100,9 +104,9 @@ export default function CreatePasswordRoute({
 			<Field
 				labelProps={{ children: 'Confirm New Password' }}
 				inputProps={{
-					...getInputProps(fields.confirmPassword, {
-						type: 'password',
-					}),
+					...fields.confirmPassword.props,
+					type: 'password',
+					defaultValue: fields.confirmPassword.defaultValue,
 					autoComplete: 'new-password',
 				}}
 				errors={fields.confirmPassword.errors}

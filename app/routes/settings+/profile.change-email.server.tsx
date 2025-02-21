@@ -1,5 +1,5 @@
-import { invariant } from '@epic-web/invariant'
 import * as E from '@react-email/components'
+import { report } from 'conform-react'
 import { data } from 'react-router'
 import {
 	requireRecentVerification,
@@ -14,12 +14,9 @@ import { newEmailAddressSessionKey } from './profile.change-email'
 export async function handleVerification({
 	request,
 	submission,
+	resultData,
 }: VerifyFunctionArgs) {
 	await requireRecentVerification(request)
-	invariant(
-		submission.status === 'success',
-		'Submission should be successful by now',
-	)
 
 	const verifySession = await verifySessionStorage.getSession(
 		request.headers.get('cookie'),
@@ -28,10 +25,12 @@ export async function handleVerification({
 	if (!newEmail) {
 		return data(
 			{
-				result: submission.reply({
-					formErrors: [
-						'You must submit the code on the same device that requested the email change.',
-					],
+				result: report<typeof resultData>(submission, {
+					error: {
+						formErrors: [
+							'You must submit the code on the same device that requested the email change.',
+						],
+					},
 				}),
 			},
 			{ status: 400 },
@@ -39,10 +38,10 @@ export async function handleVerification({
 	}
 	const preUpdateUser = await prisma.user.findFirstOrThrow({
 		select: { email: true },
-		where: { id: submission.value.target },
+		where: { id: resultData.target },
 	})
 	const user = await prisma.user.update({
-		where: { id: submission.value.target },
+		where: { id: resultData.target },
 		select: { id: true, email: true, username: true },
 		data: { email: newEmail },
 	})

@@ -82,12 +82,8 @@ export async function handleNewSession(
 
 export async function handleVerification({
 	request,
-	submission,
+	resultData,
 }: VerifyFunctionArgs) {
-	invariant(
-		submission.status === 'success',
-		'Submission should be successful by now',
-	)
 	const authSession = await authSessionStorage.getSession(
 		request.headers.get('cookie'),
 	)
@@ -96,7 +92,7 @@ export async function handleVerification({
 	)
 
 	const remember = verifySession.get(rememberKey)
-	const { redirectTo } = submission.value
+	const { redirectTo } = resultData
 	const headers = new Headers()
 	authSession.set(verifiedTimeKey, Date.now())
 

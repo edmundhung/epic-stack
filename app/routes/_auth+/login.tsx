@@ -1,11 +1,20 @@
-import { getFormProps, getInputProps, useForm } from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
 import { type SEOHandle } from '@nasa-gcn/remix-seo'
+import { parseSubmission, report } from 'conform-react'
+import {
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { data, Form, Link, useSearchParams } from 'react-router'
 import { HoneypotInputs } from 'remix-utils/honeypot/react'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
-import { CheckboxField, ErrorList, Field } from '#app/components/forms.tsx'
+import {
+	CheckboxField,
+	ErrorList,
+	Field,
+	useForm,
+} from '#app/components/forms.tsx'
 import { Spacer } from '#app/components/spacer.tsx'
 import { StatusButton } from '#app/components/ui/status-button.tsx'
 import { login, requireAnonymous } from '#app/utils/auth.server.ts'
@@ -23,12 +32,14 @@ export const handle: SEOHandle = {
 	getSitemapEntries: () => null,
 }
 
-const LoginFormSchema = z.object({
-	username: UsernameSchema,
-	password: PasswordSchema,
-	redirectTo: z.string().optional(),
-	remember: z.boolean().optional(),
-})
+const LoginFormSchema = coerceZodFormData(
+	z.object({
+		username: UsernameSchema,
+		password: PasswordSchema,
+		redirectTo: z.string().optional(),
+		remember: z.boolean().optional(),
+	}),
+)
 
 export async function loader({ request }: Route.LoaderArgs) {
 	await requireAnonymous(request)
@@ -39,33 +50,33 @@ export async function action({ request }: Route.ActionArgs) {
 	await requireAnonymous(request)
 	const formData = await request.formData()
 	await checkHoneypot(formData)
-	const submission = await parseWithZod(formData, {
-		schema: (intent) =>
-			LoginFormSchema.transform(async (data, ctx) => {
-				if (intent !== null) return { ...data, session: null }
+	const submission = parseSubmission(formData)
+	const result = await LoginFormSchema.transform(async (data, ctx) => {
+		const session = await login(data)
+		if (!session) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				message: 'Invalid username or password',
+			})
+			return z.NEVER
+		}
 
-				const session = await login(data)
-				if (!session) {
-					ctx.addIssue({
-						code: z.ZodIssueCode.custom,
-						message: 'Invalid username or password',
-					})
-					return z.NEVER
-				}
+		return { ...data, session }
+	}).safeParseAsync(submission.value)
 
-				return { ...data, session }
-			}),
-		async: true,
-	})
-
-	if (submission.status !== 'success' || !submission.value.session) {
+	if (!result.success) {
 		return data(
-			{ result: submission.reply({ hideFields: ['password'] }) },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{
+				result: report(submission, {
+					error: resolveZodResult(result),
+					hideFields: ['password'],
+				}),
+			},
+			{ status: 400 },
 		)
 	}
 
-	const { session, remember, redirectTo } = submission.value
+	const { session, remember, redirectTo } = result.data
 
 	return handleNewSession({
 		request,
@@ -80,15 +91,14 @@ export default function LoginPage({ actionData }: Route.ComponentProps) {
 	const [searchParams] = useSearchParams()
 	const redirectTo = searchParams.get('redirectTo')
 
-	const [form, fields] = useForm({
+	const { form, fields } = useForm({
 		id: 'login-form',
 		constraint: getZodConstraint(LoginFormSchema),
 		defaultValue: { redirectTo },
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: LoginFormSchema })
+		onValidate(value) {
+			return resolveZodResult(LoginFormSchema.safeParse(value))
 		},
-		shouldRevalidate: 'onBlur',
 	})
 
 	return (
@@ -104,12 +114,14 @@ export default function LoginPage({ actionData }: Route.ComponentProps) {
 
 				<div>
 					<div className="mx-auto w-full max-w-md px-8">
-						<Form method="POST" {...getFormProps(form)}>
+						<Form method="POST" {...form.props}>
 							<HoneypotInputs />
 							<Field
 								labelProps={{ children: 'Username' }}
 								inputProps={{
-									...getInputProps(fields.username, { type: 'text' }),
+									...fields.username.props,
+									type: 'text',
+									defaultValue: fields.username.defaultValue,
 									autoFocus: true,
 									className: 'lowercase',
 									autoComplete: 'username',
@@ -120,9 +132,9 @@ export default function LoginPage({ actionData }: Route.ComponentProps) {
 							<Field
 								labelProps={{ children: 'Password' }}
 								inputProps={{
-									...getInputProps(fields.password, {
-										type: 'password',
-									}),
+									...fields.password.props,
+									type: 'password',
+									defaultValue: fields.password.defaultValue,
 									autoComplete: 'current-password',
 								}}
 								errors={fields.password.errors}
@@ -134,9 +146,11 @@ export default function LoginPage({ actionData }: Route.ComponentProps) {
 										htmlFor: fields.remember.id,
 										children: 'Remember me',
 									}}
-									buttonProps={getInputProps(fields.remember, {
+									buttonProps={{
+										...fields.remember.props,
 										type: 'checkbox',
-									})}
+										defaultChecked: fields.remember.defaultValue === 'on',
+									}}
 									errors={fields.remember.errors}
 								/>
 								<div>
@@ -150,7 +164,9 @@ export default function LoginPage({ actionData }: Route.ComponentProps) {
 							</div>
 
 							<input
-								{...getInputProps(fields.redirectTo, { type: 'hidden' })}
+								{...fields.redirectTo.props}
+								type="hidden"
+								defaultValue={fields.redirectTo.defaultValue}
 							/>
 							<ErrorList errors={form.errors} id={form.errorId} />
 

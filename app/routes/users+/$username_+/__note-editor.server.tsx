@@ -1,6 +1,7 @@
-import { parseWithZod } from '@conform-to/zod'
 import { type FileUpload, parseFormData } from '@mjackson/form-data-parser'
 import { createId as cuid } from '@paralleldrive/cuid2'
+import { parseSubmission, report } from 'conform-react'
+import { resolveZodResult } from 'conform-zod'
 import { data, redirect, type ActionFunctionArgs } from 'react-router'
 import { z } from 'zod'
 import { requireUserId } from '#app/utils/auth.server.ts'
@@ -33,21 +34,22 @@ export async function action({ request }: ActionFunctionArgs) {
 		async (file: FileUpload) => uploadHandler(file),
 	)
 
-	const submission = await parseWithZod(formData, {
-		schema: NoteEditorSchema.superRefine(async (data, ctx) => {
-			if (!data.id) return
+	const submission = parseSubmission(formData)
+	const result = await NoteEditorSchema.superRefine(async (data, ctx) => {
+		if (!data.id) return
 
-			const note = await prisma.note.findUnique({
-				select: { id: true },
-				where: { id: data.id, ownerId: userId },
+		const note = await prisma.note.findUnique({
+			select: { id: true },
+			where: { id: data.id, ownerId: userId },
+		})
+		if (!note) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				message: 'Note not found',
 			})
-			if (!note) {
-				ctx.addIssue({
-					code: z.ZodIssueCode.custom,
-					message: 'Note not found',
-				})
-			}
-		}).transform(async ({ images = [], ...data }) => {
+		}
+	})
+		.transform(async ({ images = [], ...data }) => {
 			return {
 				...data,
 				imageUpdates: await Promise.all(
@@ -80,14 +82,13 @@ export async function action({ request }: ActionFunctionArgs) {
 						}),
 				),
 			}
-		}),
-		async: true,
-	})
+		})
+		.safeParseAsync(submission.value)
 
-	if (submission.status !== 'success') {
+	if (!result.success) {
 		return data(
-			{ result: submission.reply() },
-			{ status: submission.status === 'error' ? 400 : 200 },
+			{ result: report(submission, { error: resolveZodResult(result) }) },
+			{ status: 400 },
 		)
 	}
 
@@ -97,7 +98,7 @@ export async function action({ request }: ActionFunctionArgs) {
 		content,
 		imageUpdates = [],
 		newImages = [],
-	} = submission.value
+	} = result.data
 
 	const updatedNote = await prisma.note.upsert({
 		select: { id: true, owner: { select: { username: true } } },

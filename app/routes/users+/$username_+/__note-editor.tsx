@@ -1,19 +1,20 @@
 import {
-	FormProvider,
-	getFieldsetProps,
-	getFormProps,
-	getInputProps,
-	getTextareaProps,
-	useForm,
-	type FieldMetadata,
-} from '@conform-to/react'
-import { getZodConstraint, parseWithZod } from '@conform-to/zod'
+	coerceZodFormData,
+	getZodConstraint,
+	resolveZodResult,
+} from 'conform-zod'
 import { useState } from 'react'
 import { Form } from 'react-router'
 import { z } from 'zod'
 import { GeneralErrorBoundary } from '#app/components/error-boundary.tsx'
 import { floatingToolbarClassName } from '#app/components/floating-toolbar.tsx'
-import { ErrorList, Field, TextareaField } from '#app/components/forms.tsx'
+import {
+	type FieldMetadata,
+	ErrorList,
+	Field,
+	TextareaField,
+	useForm,
+} from '#app/components/forms.tsx'
 import { Button } from '#app/components/ui/button.tsx'
 import { Icon } from '#app/components/ui/icon.tsx'
 import { Label } from '#app/components/ui/label.tsx'
@@ -29,25 +30,29 @@ const contentMaxLength = 10000
 
 export const MAX_UPLOAD_SIZE = 1024 * 1024 * 3 // 3MB
 
-const ImageFieldsetSchema = z.object({
-	id: z.string().optional(),
-	file: z
-		.instanceof(File)
-		.optional()
-		.refine((file) => {
-			return !file || file.size <= MAX_UPLOAD_SIZE
-		}, 'File size must be less than 3MB'),
-	altText: z.string().optional(),
-})
+const ImageFieldsetSchema = coerceZodFormData(
+	z.object({
+		id: z.string().optional(),
+		file: z
+			.instanceof(File)
+			.optional()
+			.refine((file) => {
+				return !file || file.size <= MAX_UPLOAD_SIZE
+			}, 'File size must be less than 3MB'),
+		altText: z.string().optional(),
+	}),
+)
 
 export type ImageFieldset = z.infer<typeof ImageFieldsetSchema>
 
-export const NoteEditorSchema = z.object({
-	id: z.string().optional(),
-	title: z.string().min(titleMinLength).max(titleMaxLength),
-	content: z.string().min(contentMinLength).max(contentMaxLength),
-	images: z.array(ImageFieldsetSchema).max(5).optional(),
-})
+export const NoteEditorSchema = coerceZodFormData(
+	z.object({
+		id: z.string().optional(),
+		title: z.string().min(titleMinLength).max(titleMaxLength),
+		content: z.string().min(contentMinLength).max(contentMaxLength),
+		images: z.array(ImageFieldsetSchema).max(5).optional(),
+	}),
+)
 
 export function NoteEditor({
 	note,
@@ -58,123 +63,132 @@ export function NoteEditor({
 }) {
 	const isPending = useIsPending()
 
-	const [form, fields] = useForm({
+	const { form, fields, intent } = useForm({
 		id: 'note-editor',
 		constraint: getZodConstraint(NoteEditorSchema),
 		lastResult: actionData?.result,
-		onValidate({ formData }) {
-			return parseWithZod(formData, { schema: NoteEditorSchema })
+		onValidate(value) {
+			return resolveZodResult(NoteEditorSchema.safeParse(value))
 		},
 		defaultValue: {
 			...note,
 			images: note?.images ?? [{}],
 		},
-		shouldRevalidate: 'onBlur',
 	})
 	const imageList = fields.images.getFieldList()
 
 	return (
 		<div className="absolute inset-0">
-			<FormProvider context={form.context}>
-				<Form
-					method="POST"
-					className="flex h-full flex-col gap-y-4 overflow-y-auto overflow-x-hidden px-10 pb-28 pt-12"
-					{...getFormProps(form)}
-					encType="multipart/form-data"
-				>
-					{/*
+			<Form
+				method="POST"
+				className="flex h-full flex-col gap-y-4 overflow-y-auto overflow-x-hidden px-10 pb-28 pt-12"
+				{...form.props}
+				encType="multipart/form-data"
+			>
+				{/*
 					This hidden submit button is here to ensure that when the user hits
 					"enter" on an input field, the primary form function is submitted
 					rather than the first button in the form (which is delete/add image).
 				*/}
-					<button type="submit" className="hidden" />
-					{note ? <input type="hidden" name="id" value={note.id} /> : null}
-					<div className="flex flex-col gap-1">
-						<Field
-							labelProps={{ children: 'Title' }}
-							inputProps={{
-								autoFocus: true,
-								...getInputProps(fields.title, { type: 'text' }),
-							}}
-							errors={fields.title.errors}
-						/>
-						<TextareaField
-							labelProps={{ children: 'Content' }}
-							textareaProps={{
-								...getTextareaProps(fields.content),
-							}}
-							errors={fields.content.errors}
-						/>
-						<div>
-							<Label>Images</Label>
-							<ul className="flex flex-col gap-4">
-								{imageList.map((image, index) => {
-									console.log('image.key', image.key)
-									return (
-										<li
-											key={image.key}
-											className="relative border-b-2 border-muted-foreground"
-										>
-											<button
-												className="absolute right-0 top-0 text-foreground-destructive"
-												{...form.remove.getButtonProps({
+				<button type="submit" className="hidden" />
+				{note ? <input type="hidden" name="id" value={note.id} /> : null}
+				<div className="flex flex-col gap-1">
+					<Field
+						labelProps={{ children: 'Title' }}
+						inputProps={{
+							...fields.title.props,
+							type: 'text',
+							defaultValue: fields.title.defaultValue,
+							autoFocus: true,
+						}}
+						errors={fields.title.errors}
+					/>
+					<TextareaField
+						labelProps={{ children: 'Content' }}
+						textareaProps={{
+							...fields.content.props,
+							defaultValue: fields.content.defaultValue,
+						}}
+						errors={fields.content.errors}
+					/>
+					<div>
+						<Label>Images</Label>
+						<ul className="flex flex-col gap-4">
+							{imageList.map((image, index) => {
+								return (
+									<li
+										key={image.key}
+										className="relative border-b-2 border-muted-foreground"
+									>
+										<button
+											className="absolute right-0 top-0 text-foreground-destructive"
+											type="button"
+											onClick={() => {
+												intent.remove({
 													name: fields.images.name,
 													index,
-												})}
-											>
-												<span aria-hidden>
-													<Icon name="cross-1" />
-												</span>{' '}
-												<span className="sr-only">
-													Remove image {index + 1}
-												</span>
-											</button>
-											<ImageChooser meta={image} />
-										</li>
-									)
-								})}
-							</ul>
-						</div>
-						<Button
-							className="mt-3"
-							{...form.insert.getButtonProps({ name: fields.images.name })}
-						>
-							<span aria-hidden>
-								<Icon name="plus">Image</Icon>
-							</span>{' '}
-							<span className="sr-only">Add image</span>
-						</Button>
+												})
+											}}
+										>
+											<span aria-hidden>
+												<Icon name="cross-1" />
+											</span>{' '}
+											<span className="sr-only">Remove image {index + 1}</span>
+										</button>
+										<ImageChooser meta={image} />
+									</li>
+								)
+							})}
+						</ul>
 					</div>
-					<ErrorList id={form.errorId} errors={form.errors} />
-				</Form>
-				<div className={floatingToolbarClassName}>
-					<Button variant="destructive" {...form.reset.getButtonProps()}>
-						Reset
-					</Button>
-					<StatusButton
-						form={form.id}
-						type="submit"
-						disabled={isPending}
-						status={isPending ? 'pending' : 'idle'}
+					<Button
+						className="mt-3"
+						type="button"
+						onClick={() => {
+							intent.insert({ name: fields.images.name })
+						}}
 					>
-						Submit
-					</StatusButton>
+						<span aria-hidden>
+							<Icon name="plus">Image</Icon>
+						</span>{' '}
+						<span className="sr-only">Add image</span>
+					</Button>
 				</div>
-			</FormProvider>
+				<ErrorList id={form.errorId} errors={form.errors} />
+			</Form>
+			<div className={floatingToolbarClassName}>
+				<Button
+					variant="destructive"
+					type="button"
+					onClick={() => {
+						intent.reset()
+					}}
+				>
+					Reset
+				</Button>
+				<StatusButton
+					form={form.id}
+					type="submit"
+					disabled={isPending}
+					status={isPending ? 'pending' : 'idle'}
+				>
+					Submit
+				</StatusButton>
+			</div>
 		</div>
 	)
 }
 
 function ImageChooser({ meta }: { meta: FieldMetadata<ImageFieldset> }) {
 	const fields = meta.getFieldset()
-	const existingImage = Boolean(fields.id.initialValue)
+	const existingImage = Boolean(fields.id.defaultValue)
 	const [previewImage, setPreviewImage] = useState<string | null>(
-		fields.id.initialValue ? getNoteImgSrc(fields.id.initialValue) : null,
+		fields.id.defaultValue ? getNoteImgSrc(fields.id.defaultValue) : null,
 	)
-	const [altText, setAltText] = useState(fields.altText.initialValue ?? '')
+	const [altText, setAltText] = useState(fields.altText.defaultValue ?? '')
 
 	return (
-		<fieldset {...getFieldsetProps(meta)}>
+		<fieldset {...meta.props}>
 			<div className="flex gap-3">
 				<div className="w-32">
 					<div className="relative h-32 w-32">
@@ -205,9 +219,14 @@ function ImageChooser({ meta }: { meta: FieldMetadata<ImageFieldset> }) {
 								</div>
 							)}
 							{existingImage ? (
-								<input {...getInputProps(fields.id, { type: 'hidden' })} />
+								<input
+									{...fields.id.props}
+									type="hidden"
+									defaultValue={fields.id.defaultValue}
+								/>
 							) : null}
 							<input
+								type="file"
 								aria-label="Image"
 								className="absolute left-0 top-0 z-0 h-32 w-32 cursor-pointer opacity-0"
 								onChange={(event) => {
@@ -224,7 +243,7 @@ function ImageChooser({ meta }: { meta: FieldMetadata<ImageFieldset> }) {
 									}
 								}}
 								accept="image/*"
-								{...getInputProps(fields.file, { type: 'file' })}
+								{...fields.file.props}
 							/>
 						</label>
 					</div>
@@ -235,8 +254,9 @@ function ImageChooser({ meta }: { meta: FieldMetadata<ImageFieldset> }) {
 				<div className="flex-1">
 					<Label htmlFor={fields.altText.id}>Alt Text</Label>
 					<Textarea
+						{...fields.altText.props}
+						defaultValue={fields.altText.defaultValue}
 						onChange={(e) => setAltText(e.currentTarget.value)}
-						{...getTextareaProps(fields.altText)}
 					/>
 					<div className="min-h-[32px] px-4 pb-3 pt-1">
 						<ErrorList
